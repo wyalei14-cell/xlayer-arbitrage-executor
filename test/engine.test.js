@@ -6,6 +6,8 @@ const {
   state,
   validateMarket,
   scanOpportunities,
+  scanOpportunitiesFromData,
+  runReplayBacktest,
   detectTwoPool,
   detectTriangular,
   riskCheck,
@@ -242,4 +244,38 @@ test('scanOpportunities merges websocket quote overrides', () => {
   assert.ok(out.length > 0);
   assert.equal(state.runtimeSignals.quoteSource, 'mock+ws');
   assert.equal(state.runtimeSignals.wsQuoteCount, 1);
+});
+
+test('scanOpportunitiesFromData applies replay source and mempool gas pressure', () => {
+  const ts = Date.now();
+  const quotes = [
+    { dex: 'A', base: 'USDC', quote: 'OKB', price: 1.0, feePct: 0.2, slippagePct: 0.1, liqUsd: 120000, ts },
+    { dex: 'B', base: 'USDC', quote: 'OKB', price: 1.03, feePct: 0.2, slippagePct: 0.1, liqUsd: 140000, ts }
+  ];
+  const pendingTxs = [{ tokenIn: 'USDC', tokenOut: 'OKB' }, { tokenIn: 'USDC', tokenOut: 'OKB' }];
+
+  const out = scanOpportunitiesFromData({ quotes, pendingTxs, source: 'historical' });
+  assert.ok(out.length > 0);
+  assert.equal(state.runtimeSignals.quoteSource, 'historical');
+  assert.equal(state.runtimeSignals.pendingMempoolTxs, 2);
+  assert.ok(state.runtimeSignals.gasPressureMultiplier > 1);
+});
+
+test('runReplayBacktest returns aggregate report from snapshots', () => {
+  const ts = Date.now();
+  const snapshots = [
+    {
+      ts: new Date(ts).toISOString(),
+      quotes: [
+        { dex: 'A', base: 'USDC', quote: 'OKB', price: 1.0, feePct: 0.05, slippagePct: 0.05, liqUsd: 200000, ts },
+        { dex: 'B', base: 'USDC', quote: 'OKB', price: 1.05, feePct: 0.05, slippagePct: 0.05, liqUsd: 200000, ts }
+      ],
+      pendingTxs: []
+    }
+  ];
+
+  const report = runReplayBacktest(snapshots);
+  assert.equal(report.sampleSize, 1);
+  assert.equal(report.executedCount, 1);
+  assert.ok(report.totalRealizedPnlUsd > 0);
 });

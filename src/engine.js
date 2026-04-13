@@ -487,12 +487,30 @@ function detectTriangular(quotes) {
   });
 }
 
-function scanOpportunities() {
-  const { quotes, pendingTxs } = loadMarketSync();
+function scanOpportunitiesFromData({ quotes, pendingTxs = [], source = 'replay', wsQuoteCount = 0 }) {
   const validated = validateMarket(quotes);
+  state.runtimeSignals = {
+    quoteSource: source,
+    wsQuoteCount,
+    pendingMempoolTxs: pendingTxs.length,
+    gasPressureMultiplier: +Math.min(
+      state.config.maxMempoolGasMultiplier,
+      1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx
+    ).toFixed(4)
+  };
   const opportunities = [...detectTwoPool(validated), ...detectTriangular(validated)];
   const pressured = applyMempoolPressure(opportunities, pendingTxs);
   return pressured.sort((a, b) => b.netProfitUsd - a.netProfitUsd);
+}
+
+function scanOpportunities() {
+  const { quotes, pendingTxs } = loadMarketSync();
+  return scanOpportunitiesFromData({
+    quotes,
+    pendingTxs,
+    source: state.runtimeSignals.quoteSource,
+    wsQuoteCount: state.runtimeSignals.wsQuoteCount
+  });
 }
 
 function riskCheck(opp) {
@@ -660,6 +678,60 @@ function optimizeFromHistory() {
   return state.config;
 }
 
+function runReplayBacktest(snapshots = []) {
+  const prevMode = state.session.mode;
+  state.session.mode = 'paper';
+
+  const runs = [];
+  for (const snap of snapshots) {
+    try {
+      const opportunities = scanOpportunitiesFromData({
+        quotes: snap.quotes || [],
+        pendingTxs: snap.pendingTxs || [],
+        source: 'replay'
+      });
+      const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
+      const selected = assessed.find((x) => x.risk.pass) || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' } };
+
+      let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason, gasCostUsd: 0, netAfterGasUsd: 0 };
+      if (selected.risk.pass) result = executeOpportunity(selected.opp);
+
+      runs.push({
+        ts: snap.ts || new Date().toISOString(),
+        success: result.success,
+        reason: result.reason,
+        routeType: selected.opp?.type || 'none',
+        netProfitUsd: selected.opp?.netProfitUsd || 0,
+        gasCostUsd: result.gasCostUsd || 0,
+        realizedProfitUsd: result.realizedProfitUsd || 0
+      });
+    } catch (err) {
+      runs.push({
+        ts: snap.ts || new Date().toISOString(),
+        success: false,
+        reason: `replay-error:${err.message}`,
+        routeType: 'none',
+        netProfitUsd: 0,
+        gasCostUsd: 0,
+        realizedProfitUsd: 0
+      });
+    }
+  }
+
+  state.session.mode = prevMode;
+
+  const executed = runs.filter((r) => r.success);
+  const totalRealizedPnlUsd = +runs.reduce((s, r) => s + (r.realizedProfitUsd || 0), 0).toFixed(4);
+  return {
+    sampleSize: runs.length,
+    executedCount: executed.length,
+    executionRate: +(executed.length / Math.max(runs.length, 1)).toFixed(4),
+    totalRealizedPnlUsd,
+    avgRealizedPnlUsd: +(totalRealizedPnlUsd / Math.max(executed.length, 1)).toFixed(4),
+    runs
+  };
+}
+
 function runOnce() {
   let opportunities = [];
   let selected = null;
@@ -727,7 +799,9 @@ loadRuntimeState();
 module.exports = {
   state,
   runOnce,
+  runReplayBacktest,
   scanOpportunities,
+  scanOpportunitiesFromData,
   optimizeFromHistory,
   validateMarket,
   detectTwoPool,

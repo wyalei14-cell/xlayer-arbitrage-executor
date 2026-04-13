@@ -58,12 +58,14 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - fail-closed validation
   - two-pool detection
   - triangular detection
+  - replay/backtest runner over historical snapshots
 
 ## Run
 ```bash
 npm run scan
 npm run autopilot
 npm run api
+npm run backtest
 npm test
 
 # wallet/session controls
@@ -101,3 +103,7 @@ Execution log file:
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)
+
+Backtest files:
+- input: `data/historical-snapshots.json` (array of `{ ts, quotes[], pendingTxs[] }`)
+- output: `data/backtest-report.json` (aggregate execution/pnl report + per-snapshot runs)

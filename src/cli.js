@@ -1,7 +1,10 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const {
   state,
   runOnce,
+  runReplayBacktest,
   scanOpportunities,
   setAutopilot,
   setMode,
@@ -110,6 +113,28 @@ if (cmd === 'status') {
       2
     )
   );
+  process.exit(0);
+}
+
+if (cmd === 'backtest') {
+  const input = process.argv[3] || path.join(process.cwd(), 'data', 'historical-snapshots.json');
+  const output = process.argv[4] || path.join(process.cwd(), 'data', 'backtest-report.json');
+
+  if (!fs.existsSync(input)) {
+    console.error(`backtest input not found: ${input}`);
+    process.exit(1);
+  }
+
+  const snapshots = JSON.parse(fs.readFileSync(input, 'utf8'));
+  if (!Array.isArray(snapshots)) {
+    console.error('backtest input must be an array of { ts, quotes[], pendingTxs[] }');
+    process.exit(1);
+  }
+
+  const report = runReplayBacktest(snapshots);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  fs.writeFileSync(output, JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ ok: true, input, output, report }, null, 2));
   process.exit(0);
 }
 
