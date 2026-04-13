@@ -22,7 +22,8 @@ const {
   walletLogin,
   walletLogout,
   readExecutionLedger,
-  getPnlMetrics
+  getPnlMetrics,
+  resetStreamingSignalCache
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
@@ -43,6 +44,7 @@ function resetSession() {
 
 test.beforeEach(() => {
   resetSession();
+  resetStreamingSignalCache();
   if (fs.existsSync(runtimeStateFile)) fs.unlinkSync(runtimeStateFile);
   if (fs.existsSync(executionsFile)) fs.unlinkSync(executionsFile);
   if (fs.existsSync(wsQuotesFile)) fs.unlinkSync(wsQuotesFile);
@@ -332,6 +334,8 @@ test('scanOpportunities merges websocket quote overrides', () => {
   assert.ok(out.length > 0);
   assert.equal(state.runtimeSignals.quoteSource, 'mock+ws');
   assert.equal(state.runtimeSignals.wsQuoteCount, 1);
+  assert.equal(state.runtimeSignals.listenerMode, 'watch');
+  assert.ok(state.runtimeSignals.wsUpdatedAt);
 });
 
 test('scanOpportunitiesFromData applies replay source and mempool gas pressure', () => {

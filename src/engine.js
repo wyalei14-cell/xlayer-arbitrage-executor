@@ -3,6 +3,15 @@ const path = require('path');
 
 const RUNTIME_STATE_FILE = path.join(process.cwd(), 'data', 'runtime-state.json');
 
+const streamingCache = {
+  initialized: false,
+  listenersStarted: false,
+  wsQuotes: [],
+  pendingTxs: [],
+  wsUpdatedAt: null,
+  mempoolUpdatedAt: null
+};
+
 const state = {
   autopilot: false,
   config: {
@@ -45,7 +54,10 @@ const state = {
     quoteSource: 'mock',
     wsQuoteCount: 0,
     pendingMempoolTxs: 0,
-    gasPressureMultiplier: 1
+    gasPressureMultiplier: 1,
+    listenerMode: 'poll',
+    wsUpdatedAt: null,
+    mempoolUpdatedAt: null
   }
 };
 
@@ -295,6 +307,44 @@ function readArrayFileSafe(file) {
   }
 }
 
+function reloadStreamingCacheFromFiles() {
+  streamingCache.wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
+  streamingCache.pendingTxs = readArrayFileSafe(state.config.mempoolFile);
+  streamingCache.wsUpdatedAt = new Date().toISOString();
+  streamingCache.mempoolUpdatedAt = new Date().toISOString();
+  streamingCache.initialized = true;
+}
+
+function resetStreamingSignalCache() {
+  fs.unwatchFile(state.config.wsQuoteFile);
+  fs.unwatchFile(state.config.mempoolFile);
+  streamingCache.initialized = false;
+  streamingCache.listenersStarted = false;
+  streamingCache.wsQuotes = [];
+  streamingCache.pendingTxs = [];
+  streamingCache.wsUpdatedAt = null;
+  streamingCache.mempoolUpdatedAt = null;
+}
+
+function startStreamingSignalListeners() {
+  if (!state.config.enableStreamingSignals || streamingCache.listenersStarted) return;
+
+  fs.mkdirSync(path.dirname(state.config.wsQuoteFile), { recursive: true });
+  reloadStreamingCacheFromFiles();
+
+  fs.watchFile(state.config.wsQuoteFile, { interval: 1000, persistent: false }, () => {
+    streamingCache.wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
+    streamingCache.wsUpdatedAt = new Date().toISOString();
+  });
+
+  fs.watchFile(state.config.mempoolFile, { interval: 1000, persistent: false }, () => {
+    streamingCache.pendingTxs = readArrayFileSafe(state.config.mempoolFile);
+    streamingCache.mempoolUpdatedAt = new Date().toISOString();
+  });
+
+  streamingCache.listenersStarted = true;
+}
+
 function quoteKey(q) {
   return [q.dex, q.base, q.quote].join('|');
 }
@@ -354,8 +404,10 @@ function loadMarketSync() {
   let pendingTxs = [];
 
   if (state.config.enableStreamingSignals) {
-    wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
-    pendingTxs = readArrayFileSafe(state.config.mempoolFile);
+    startStreamingSignalListeners();
+    if (!streamingCache.initialized) reloadStreamingCacheFromFiles();
+    wsQuotes = streamingCache.wsQuotes;
+    pendingTxs = streamingCache.pendingTxs;
     quotes = mergeQuotes(quotes, wsQuotes);
   }
 
@@ -368,7 +420,10 @@ function loadMarketSync() {
     quoteSource: wsQuotes.length ? 'mock+ws' : 'mock',
     wsQuoteCount: wsQuotes.length,
     pendingMempoolTxs: pendingTxs.length,
-    gasPressureMultiplier: +gasPressureMultiplier.toFixed(4)
+    gasPressureMultiplier: +gasPressureMultiplier.toFixed(4),
+    listenerMode: streamingCache.listenersStarted ? 'watch' : 'poll',
+    wsUpdatedAt: streamingCache.wsUpdatedAt,
+    mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
 
   return { quotes, pendingTxs };
@@ -527,7 +582,10 @@ function scanOpportunitiesFromData({ quotes, pendingTxs = [], source = 'replay',
     gasPressureMultiplier: +Math.min(
       state.config.maxMempoolGasMultiplier,
       1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx
-    ).toFixed(4)
+    ).toFixed(4),
+    listenerMode: source === 'replay' || source === 'historical' ? 'offline' : state.runtimeSignals.listenerMode,
+    wsUpdatedAt: state.runtimeSignals.wsUpdatedAt,
+    mempoolUpdatedAt: state.runtimeSignals.mempoolUpdatedAt
   };
   const opportunities = [...detectTwoPool(validated), ...detectTriangular(validated)];
   const pressured = applyMempoolPressure(opportunities, pendingTxs);
@@ -907,5 +965,7 @@ module.exports = {
   walletLogin,
   walletLogout,
   readExecutionLedger,
-  getPnlMetrics
+  getPnlMetrics,
+  startStreamingSignalListeners,
+  resetStreamingSignalCache
 };

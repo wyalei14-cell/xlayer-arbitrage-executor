@@ -15,6 +15,10 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - optional pending tx feed via `data/mempool.json`
   - adds pair-level slippage pressure into path scoring
   - raises gas safety estimate during congestion (`runtimeSignals.gasPressureMultiplier`)
+- Streaming listener path (websocket + mempool)
+  - file-watch listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory
+  - scanner consumes cached overlays without per-scan file parse
+  - listener health metadata exposed in `runtimeSignals` (`listenerMode`, `wsUpdatedAt`, `mempoolUpdatedAt`)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
