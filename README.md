@@ -25,6 +25,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Execution:
   - recheck-before-send
   - bounded retries
+  - OnchainOS preflight chain: Wallet -> DEX tx build -> Security tx scan -> Gateway estimate/simulate
+  - fail-closed preflight guard (blocks execution if any integration check fails)
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
@@ -54,12 +56,18 @@ npm test
 - `AUTOPILOT=true|false` (default true in `npm run autopilot` command path)
 - `QUOTE_ADAPTER=mock|live` (default `mock`)
 - `QUOTE_ADAPTER_URL=https://...` (required for `QUOTE_ADAPTER=live`)
+- `WALLET_ADAPTER=mock|live` (default `mock`; `live` requires `WALLET_ADDRESS`)
+- `DEX_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
+- `SECURITY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
+- `GATEWAY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
+- `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
 - `PORT=8787` (api server)
 
 ## Config highlights
 Default runtime risk config in `src/engine.js`:
 - `minLegLiquidityUsd` (default `50000`)
 - `maxLiquidityUsagePct` (default `2`)
+- `failClosedOnMissingOnchainOS` (default `true`)
 
 ## Data output
 Execution log file:

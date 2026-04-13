@@ -13,12 +13,124 @@ const state = {
     maxQuoteAgeMs: 45_000,
     maxExecutionRetries: 2,
     minLegLiquidityUsd: 50_000,
-    maxLiquidityUsagePct: 2
+    maxLiquidityUsagePct: 2,
+    chainId: 196,
+    failClosedOnMissingOnchainOS: true
   }
 };
 
 function now() {
   return Date.now();
+}
+
+function isHexAddress(v) {
+  return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
+function getAdapterMode(name) {
+  return String(process.env[name] || 'mock').toLowerCase();
+}
+
+function requireEnv(name, reason) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${reason}: missing ${name}`);
+  return value;
+}
+
+function walletAdapter() {
+  const mode = getAdapterMode('WALLET_ADAPTER');
+  if (mode === 'mock') {
+    return { provider: 'wallet-mock', address: '0x1111111111111111111111111111111111111111' };
+  }
+  if (mode === 'live') {
+    const address = requireEnv('WALLET_ADDRESS', 'wallet-check-failed');
+    if (!isHexAddress(address)) throw new Error('wallet-check-failed: invalid WALLET_ADDRESS');
+    return { provider: 'wallet-live', address };
+  }
+  throw new Error(`wallet-check-failed: unsupported WALLET_ADAPTER=${mode}`);
+}
+
+function dexAdapter(opp, wallet) {
+  const mode = getAdapterMode('DEX_ADAPTER');
+  const routeId = (opp.path || []).join(' | ');
+  if (mode === 'mock') {
+    return {
+      provider: 'dex-mock',
+      routeId,
+      tx: {
+        chainId: state.config.chainId,
+        from: wallet.address,
+        to: '0x2222222222222222222222222222222222222222',
+        data: '0xfeedbeef',
+        value: '0x0'
+      }
+    };
+  }
+  if (mode === 'live') {
+    // interface placeholder: explicit requirements for future HTTP/client integration
+    requireEnv('DEX_QUOTE_URL', 'dex-build-failed');
+    requireEnv('DEX_ROUTER_ADDRESS', 'dex-build-failed');
+    throw new Error('dex-build-failed: live adapter interface not wired (set DEX_ADAPTER=mock unless integration client is provided)');
+  }
+  throw new Error(`dex-build-failed: unsupported DEX_ADAPTER=${mode}`);
+}
+
+function securityAdapter(opp, txPlan) {
+  const mode = getAdapterMode('SECURITY_ADAPTER');
+  if (mode === 'mock') {
+    if (String(process.env.SECURITY_FORCE_BLOCK || 'false') === 'true') {
+      return { provider: 'security-mock', safe: false, riskLevel: 'high', reason: 'forced-block' };
+    }
+    const denied = state.config.denyTokens.some((t) => (opp.path || []).join('|').includes(t));
+    if (denied) return { provider: 'security-mock', safe: false, riskLevel: 'high', reason: 'deny-token' };
+    return { provider: 'security-mock', safe: true, riskLevel: 'low', reason: 'ok' };
+  }
+  if (mode === 'live') {
+    requireEnv('SECURITY_SCAN_URL', 'security-scan-failed');
+    throw new Error('security-scan-failed: live adapter interface not wired (set SECURITY_ADAPTER=mock unless integration client is provided)');
+  }
+  throw new Error(`security-scan-failed: unsupported SECURITY_ADAPTER=${mode}`);
+}
+
+function onchainGatewayAdapter(txPlan) {
+  const mode = getAdapterMode('GATEWAY_ADAPTER');
+  if (mode === 'mock') {
+    return {
+      provider: 'gateway-mock',
+      estimate: { gasLimit: 320000, maxFeePerGasGwei: 0.06 },
+      simulation: { ok: true, status: 'success' }
+    };
+  }
+  if (mode === 'live') {
+    requireEnv('ONCHAIN_GATEWAY_URL', 'gateway-check-failed');
+    throw new Error('gateway-check-failed: live adapter interface not wired (set GATEWAY_ADAPTER=mock unless integration client is provided)');
+  }
+  throw new Error(`gateway-check-failed: unsupported GATEWAY_ADAPTER=${mode}`);
+}
+
+function buildOnchainExecutionPlan(opp) {
+  try {
+    const wallet = walletAdapter();
+    const dex = dexAdapter(opp, wallet);
+    const security = securityAdapter(opp, dex.tx);
+    if (!security.safe) {
+      return { ok: false, reason: `security-blocked:${security.reason}`, wallet, dex, security };
+    }
+    const gateway = onchainGatewayAdapter(dex.tx);
+    if (!gateway.estimate?.gasLimit || !gateway.simulation?.ok) {
+      return { ok: false, reason: 'gateway-preflight-failed', wallet, dex, security, gateway };
+    }
+    return {
+      ok: true,
+      reason: 'ok',
+      wallet,
+      dex,
+      security,
+      gateway
+    };
+  } catch (err) {
+    return { ok: false, reason: `onchain-preflight-error:${err.message}` };
+  }
 }
 
 function mockMarket() {
@@ -194,17 +306,31 @@ function riskCheck(opp) {
 
 function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
+  const preflight = buildOnchainExecutionPlan(rechecked);
+  if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: preflight.reason,
+      preflight
+    };
+  }
+
   for (let attempt = 0; attempt <= state.config.maxExecutionRetries; attempt++) {
-    if (rechecked.netProfitUsd <= 0) return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed' };
+    if (rechecked.netProfitUsd <= 0) {
+      return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed', preflight };
+    }
     const txHash = '0x' + Buffer.from(`${Date.now()}-${attempt}`).toString('hex').slice(0, 64).padEnd(64, '0');
     return {
       success: true,
       txHash,
       realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
-      reason: `executed-attempt-${attempt + 1}`
+      reason: `executed-attempt-${attempt + 1}`,
+      preflight
     };
   }
-  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted' };
+  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted', preflight };
 }
 
 function appendRecord(obj) {
@@ -270,6 +396,7 @@ function runOnce() {
     netProfitUsd: selected.opp?.netProfitUsd || 0,
     tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
     consideredCount: opportunities.length,
+    onchainPreflight: result.preflight || null,
     ...result
   };
   appendRecord(record);
@@ -278,4 +405,16 @@ function runOnce() {
   return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot };
 }
 
-module.exports = { state, runOnce, scanOpportunities, optimizeFromHistory, validateMarket, detectTwoPool, detectTriangular, riskCheck, liveMarket };
+module.exports = {
+  state,
+  runOnce,
+  scanOpportunities,
+  optimizeFromHistory,
+  validateMarket,
+  detectTwoPool,
+  detectTriangular,
+  riskCheck,
+  executeOpportunity,
+  buildOnchainExecutionPlan,
+  liveMarket
+};

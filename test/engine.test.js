@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { state, validateMarket, detectTwoPool, detectTriangular, riskCheck } = require('../src/engine');
+const { state, validateMarket, detectTwoPool, detectTriangular, riskCheck, executeOpportunity, buildOnchainExecutionPlan } = require('../src/engine');
 
 test('validateMarket fails closed on missing fields', () => {
   assert.throws(() => validateMarket([{ dex: 'X' }]), /missing quote field/);
@@ -54,4 +54,39 @@ test('riskCheck blocks low-liquidity opportunities', () => {
   const out = riskCheck(opp);
   assert.equal(out.pass, false);
   assert.equal(out.reason, 'liquidity-too-low');
+});
+
+test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing env', () => {
+  const prev = process.env.WALLET_ADAPTER;
+  const prevAddress = process.env.WALLET_ADDRESS;
+  process.env.WALLET_ADAPTER = 'live';
+  delete process.env.WALLET_ADDRESS;
+
+  const out = buildOnchainExecutionPlan({ path: ['USDC->OKB@A'] });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /wallet-check-failed/);
+
+  if (prev === undefined) delete process.env.WALLET_ADAPTER;
+  else process.env.WALLET_ADAPTER = prev;
+  if (prevAddress === undefined) delete process.env.WALLET_ADDRESS;
+  else process.env.WALLET_ADDRESS = prevAddress;
+});
+
+test('executeOpportunity blocks when security scan flags transaction', () => {
+  const prev = process.env.SECURITY_FORCE_BLOCK;
+  process.env.SECURITY_FORCE_BLOCK = 'true';
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.match(out.reason, /security-blocked/);
+
+  if (prev === undefined) delete process.env.SECURITY_FORCE_BLOCK;
+  else process.env.SECURITY_FORCE_BLOCK = prev;
 });
