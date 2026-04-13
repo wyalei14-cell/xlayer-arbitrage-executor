@@ -39,6 +39,7 @@ code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
 <div class="card">
   <strong>Autopilot:</strong> ${state.autopilot} | <strong>Mode:</strong> ${state.session.mode}<br/>
   <strong>Wallet:</strong> ${state.session.wallet.address || 'not logged in'}<br/>
+  <strong>Signals:</strong> source=${state.runtimeSignals.quoteSource}, wsQuotes=${state.runtimeSignals.wsQuoteCount}, pendingMempool=${state.runtimeSignals.pendingMempoolTxs}, gasMult=${state.runtimeSignals.gasPressureMultiplier}<br/>
   <strong>Last Record:</strong> ${last ? `${last.ts} / ${last.reason} / pnl=$${last.realizedProfitUsd}` : 'none'}
 </div>
 <p>JSON endpoints: <code>/metrics</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code></p>
@@ -102,6 +103,7 @@ if (cmd === 'status') {
         autopilot: state.autopilot,
         mode: state.session.mode,
         wallet: state.session.wallet,
+        runtimeSignals: state.runtimeSignals,
         config: state.config
       },
       null,
@@ -136,7 +138,7 @@ if (cmd === 'api') {
       return res.end(JSON.stringify({ ok: true, mode: 'live' }));
     }
     if (req.url === '/session') {
-      return res.end(JSON.stringify({ session: state.session, autopilot: state.autopilot }));
+      return res.end(JSON.stringify({ session: state.session, autopilot: state.autopilot, runtimeSignals: state.runtimeSignals }));
     }
     if (req.url === '/config') {
       return res.end(JSON.stringify({ config: state.config, autopilot: state.autopilot }));

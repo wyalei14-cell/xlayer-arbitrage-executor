@@ -9,7 +9,12 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - autopilot/mode/session state survives restarts
 - Quote adapters
   - `mock` adapter for local development
+  - optional websocket quote overlay via `data/ws-quotes.json` (event-driven snapshot merge)
   - `live` adapter contract (via `QUOTE_ADAPTER_URL`) for OnchainOS-compatible quote service integration
+- Mempool-aware execution pressure
+  - optional pending tx feed via `data/mempool.json`
+  - adds pair-level slippage pressure into path scoring
+  - raises gas safety estimate during congestion (`runtimeSignals.gasPressureMultiplier`)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
@@ -79,6 +84,8 @@ node src/cli.js wallet-logout
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `PORT=8787` (api server)
+- `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
+- `data/mempool.json` (optional pending tx array for mempool pressure model)
 
 ## Config highlights
 Default runtime risk config in `src/engine.js`:

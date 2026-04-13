@@ -19,7 +19,13 @@ const state = {
     chainId: 196,
     failClosedOnMissingOnchainOS: true,
     nativeTokenPriceUsd: 45,
-    gasSafetyMultiplier: 1.15
+    gasSafetyMultiplier: 1.15,
+    enableStreamingSignals: true,
+    wsQuoteFile: path.join(process.cwd(), 'data', 'ws-quotes.json'),
+    mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
+    mempoolSlippageBpsPerPendingTx: 2,
+    mempoolGasMultiplierPerPendingTx: 0.015,
+    maxMempoolGasMultiplier: 2
   },
   session: {
     mode: 'paper',
@@ -29,6 +35,12 @@ const state = {
       address: null,
       connectedAt: null
     }
+  },
+  runtimeSignals: {
+    quoteSource: 'mock',
+    wsQuoteCount: 0,
+    pendingMempoolTxs: 0,
+    gasPressureMultiplier: 1
   }
 };
 
@@ -242,12 +254,93 @@ async function liveMarket() {
   return data;
 }
 
+function readArrayFileSafe(file) {
+  if (!fs.existsSync(file)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function quoteKey(q) {
+  return [q.dex, q.base, q.quote].join('|');
+}
+
+function mergeQuotes(baseQuotes, wsQuotes) {
+  if (!wsQuotes.length) return baseQuotes;
+  const out = new Map(baseQuotes.map((q) => [quoteKey(q), q]));
+  for (const q of wsQuotes) out.set(quoteKey(q), q);
+  return Array.from(out.values());
+}
+
+function pairFromPathLeg(pathLeg) {
+  const route = String(pathLeg || '').split('@')[0];
+  const [a, b] = route.split('->');
+  return [a, b].sort().join('/');
+}
+
+function applyMempoolPressure(opportunities, pendingTxs) {
+  if (!pendingTxs.length) return opportunities;
+  const pairPressure = new Map();
+
+  for (const tx of pendingTxs) {
+    const base = tx.base || tx.tokenIn;
+    const quote = tx.quote || tx.tokenOut;
+    if (!base || !quote) continue;
+    const key = [base, quote].sort().join('/');
+    pairPressure.set(key, (pairPressure.get(key) || 0) + 1);
+  }
+
+  return opportunities.map((opp) => {
+    const touched = (opp.path || []).reduce((sum, leg) => sum + (pairPressure.get(pairFromPathLeg(leg)) || 0), 0);
+    if (!touched) return opp;
+
+    const extraSlippageUsd = +((opp.tradeAmountUsd || 0) * ((state.config.mempoolSlippageBpsPerPendingTx * touched) / 10_000)).toFixed(4);
+    const netProfitUsd = +((opp.netProfitUsd || 0) - extraSlippageUsd).toFixed(4);
+
+    return {
+      ...opp,
+      slippageUsd: +((opp.slippageUsd || 0) + extraSlippageUsd).toFixed(4),
+      netProfitUsd,
+      mempoolPressure: {
+        pendingTouches: touched,
+        extraSlippageUsd
+      }
+    };
+  });
+}
+
 function loadMarketSync() {
   const mode = String(process.env.QUOTE_ADAPTER || 'mock').toLowerCase();
   if (mode !== 'mock') {
     throw new Error('sync scan supports only QUOTE_ADAPTER=mock; use async path for live');
   }
-  return mockMarket();
+
+  let quotes = mockMarket();
+  let wsQuotes = [];
+  let pendingTxs = [];
+
+  if (state.config.enableStreamingSignals) {
+    wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
+    pendingTxs = readArrayFileSafe(state.config.mempoolFile);
+    quotes = mergeQuotes(quotes, wsQuotes);
+  }
+
+  const gasPressureMultiplier = Math.min(
+    state.config.maxMempoolGasMultiplier,
+    1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx
+  );
+
+  state.runtimeSignals = {
+    quoteSource: wsQuotes.length ? 'mock+ws' : 'mock',
+    wsQuoteCount: wsQuotes.length,
+    pendingMempoolTxs: pendingTxs.length,
+    gasPressureMultiplier: +gasPressureMultiplier.toFixed(4)
+  };
+
+  return { quotes, pendingTxs };
 }
 
 function validateQuoteRow(q) {
@@ -279,7 +372,8 @@ function estimateGasCostUsd(gatewayEstimate) {
 
   const gasNative = gasLimit * maxFeePerGasGwei * 1e-9;
   const baseGasUsd = gasNative * nativeTokenPriceUsd;
-  return +(baseGasUsd * state.config.gasSafetyMultiplier).toFixed(6);
+  const mempoolMultiplier = Number(state.runtimeSignals?.gasPressureMultiplier || 1);
+  return +(baseGasUsd * state.config.gasSafetyMultiplier * mempoolMultiplier).toFixed(6);
 }
 
 function evaluateExecutionEconomics(opp, preflight) {
@@ -394,9 +488,11 @@ function detectTriangular(quotes) {
 }
 
 function scanOpportunities() {
-  const quotes = validateMarket(loadMarketSync());
-  const opportunities = [...detectTwoPool(quotes), ...detectTriangular(quotes)];
-  return opportunities.sort((a, b) => b.netProfitUsd - a.netProfitUsd);
+  const { quotes, pendingTxs } = loadMarketSync();
+  const validated = validateMarket(quotes);
+  const opportunities = [...detectTwoPool(validated), ...detectTriangular(validated)];
+  const pressured = applyMempoolPressure(opportunities, pendingTxs);
+  return pressured.sort((a, b) => b.netProfitUsd - a.netProfitUsd);
 }
 
 function riskCheck(opp) {
@@ -589,7 +685,7 @@ function runOnce() {
       reason: `scan-error:${err.message}`
     };
     appendRecord(failRecord);
-    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session };
+    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals };
   }
 
   let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
@@ -617,12 +713,13 @@ function runOnce() {
     mode: state.session.mode,
     walletAddress: state.session.wallet.address,
     onchainPreflight: result.preflight || null,
+    runtimeSignals: state.runtimeSignals,
     ...result
   };
   appendRecord(record);
   optimizeFromHistory();
 
-  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session };
+  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals };
 }
 
 loadRuntimeState();

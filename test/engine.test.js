@@ -5,6 +5,7 @@ const path = require('path');
 const {
   state,
   validateMarket,
+  scanOpportunities,
   detectTwoPool,
   detectTriangular,
   riskCheck,
@@ -21,6 +22,8 @@ const {
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
 const executionsFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+const wsQuotesFile = path.join(process.cwd(), 'data', 'ws-quotes.json');
+const mempoolFile = path.join(process.cwd(), 'data', 'mempool.json');
 
 function resetSession() {
   state.autopilot = false;
@@ -37,6 +40,8 @@ test.beforeEach(() => {
   resetSession();
   if (fs.existsSync(runtimeStateFile)) fs.unlinkSync(runtimeStateFile);
   if (fs.existsSync(executionsFile)) fs.unlinkSync(executionsFile);
+  if (fs.existsSync(wsQuotesFile)) fs.unlinkSync(wsQuotesFile);
+  if (fs.existsSync(mempoolFile)) fs.unlinkSync(mempoolFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -203,4 +208,38 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   assert.equal(metrics.totalGasCostUsd, 0.5);
   assert.equal(metrics.byMode.paper.runs, 2);
   assert.equal(metrics.byMode.live.executed, 1);
+});
+
+test('scanOpportunities applies mempool pressure to net profit', () => {
+  fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+  fs.writeFileSync(
+    mempoolFile,
+    JSON.stringify([
+      { tokenIn: 'USDC', tokenOut: 'OKB' },
+      { tokenIn: 'USDC', tokenOut: 'OKB' },
+      { tokenIn: 'USDC', tokenOut: 'OKB' }
+    ])
+  );
+
+  const out = scanOpportunities();
+  const impacted = out.find((x) => x.mempoolPressure && x.mempoolPressure.pendingTouches > 0);
+  assert.ok(impacted);
+  assert.ok(impacted.mempoolPressure.extraSlippageUsd > 0);
+  assert.ok(state.runtimeSignals.pendingMempoolTxs >= 3);
+});
+
+test('scanOpportunities merges websocket quote overrides', () => {
+  fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+  const ts = Date.now();
+  fs.writeFileSync(
+    wsQuotesFile,
+    JSON.stringify([
+      { dex: 'UniswapV3', base: 'USDC', quote: 'OKB', price: 1.1, feePct: 0.3, slippagePct: 0.16, liqUsd: 200000, ts }
+    ])
+  );
+
+  const out = scanOpportunities();
+  assert.ok(out.length > 0);
+  assert.equal(state.runtimeSignals.quoteSource, 'mock+ws');
+  assert.equal(state.runtimeSignals.wsQuoteCount, 1);
 });
