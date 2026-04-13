@@ -6,6 +6,7 @@
   "scripts": {
     "scan": "node src/cli.js scan",
     "autopilot": "node src/cli.js autopilot",
-    "api": "node src/cli.js api"
+    "api": "node src/cli.js api",
+    "test": "node --test"
   }
 }
