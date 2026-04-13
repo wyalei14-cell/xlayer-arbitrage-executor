@@ -66,7 +66,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - adaptive scan interval
   - adaptive amount/profit threshold from recent history
 - Tests:
-  - fail-closed validation
+  - fail-closed validation (security block, gateway simulation/estimate failure, gas-profit gate)
   - two-pool detection
   - triangular detection
   - replay/backtest runner over historical snapshots
@@ -100,6 +100,8 @@ node src/cli.js wallet-logout
 - `GATEWAY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `ROUTER_PROVIDER=onchainos-router` (optional router/aggregator provider label in preflight route plan)
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
+- `GATEWAY_FORCE_SIM_FAIL=true` (test switch to force gateway simulation failure in mock mode)
+- `GATEWAY_FORCE_MISSING_GAS=true` (test switch to force missing gas estimate in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)
 - `SOAK_ITERATIONS=120` (default iterations for `npm run soak`)

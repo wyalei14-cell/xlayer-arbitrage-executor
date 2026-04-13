@@ -262,6 +262,46 @@ test('executeOpportunity also fail-closes on preflight security block in paper m
   else process.env.SECURITY_FORCE_BLOCK = prev;
 });
 
+test('executeOpportunity fail-closes when gateway simulation fails', () => {
+  const prev = process.env.GATEWAY_FORCE_SIM_FAIL;
+  process.env.GATEWAY_FORCE_SIM_FAIL = 'true';
+  setMode('paper');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.equal(out.reason, 'gateway-preflight-failed');
+
+  if (prev === undefined) delete process.env.GATEWAY_FORCE_SIM_FAIL;
+  else process.env.GATEWAY_FORCE_SIM_FAIL = prev;
+});
+
+test('executeOpportunity fail-closes when gateway estimate is missing gas limit', () => {
+  const prev = process.env.GATEWAY_FORCE_MISSING_GAS;
+  process.env.GATEWAY_FORCE_MISSING_GAS = 'true';
+  setMode('paper');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.equal(out.reason, 'gateway-preflight-failed');
+
+  if (prev === undefined) delete process.env.GATEWAY_FORCE_MISSING_GAS;
+  else process.env.GATEWAY_FORCE_MISSING_GAS = prev;
+});
+
 test('executeOpportunity blocks when gas-adjusted net profit is below threshold', () => {
   const prevPrice = process.env.NATIVE_TOKEN_PRICE_USD;
   process.env.NATIVE_TOKEN_PRICE_USD = '1000000';

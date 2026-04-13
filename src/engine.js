@@ -225,10 +225,18 @@ function securityAdapter(opp, txPlan) {
 function onchainGatewayAdapter(txPlan) {
   const mode = getAdapterMode('GATEWAY_ADAPTER');
   if (mode === 'mock') {
+    const forceSimFail = String(process.env.GATEWAY_FORCE_SIM_FAIL || 'false') === 'true';
+    const forceMissingGas = String(process.env.GATEWAY_FORCE_MISSING_GAS || 'false') === 'true';
+
     return {
       provider: 'gateway-mock',
-      estimate: { gasLimit: 320000, maxFeePerGasGwei: 0.06 },
-      simulation: { ok: true, status: 'success' }
+      estimate: {
+        gasLimit: forceMissingGas ? 0 : 320000,
+        maxFeePerGasGwei: 0.06
+      },
+      simulation: forceSimFail
+        ? { ok: false, status: 'revert', reason: 'forced-simulation-failure' }
+        : { ok: true, status: 'success' }
     };
   }
   if (mode === 'live') {
