@@ -28,7 +28,9 @@ const state = {
     mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
     mempoolSlippageBpsPerPendingTx: 2,
     mempoolGasMultiplierPerPendingTx: 0.015,
-    maxMempoolGasMultiplier: 2
+    maxMempoolGasMultiplier: 2,
+    routeComplexityPenaltyUsdPerHop: 0.2,
+    routeDexDiversityBonusUsd: 0.05
   },
   session: {
     mode: 'paper',
@@ -554,6 +556,41 @@ function riskCheck(opp) {
   return { pass: true, reason: 'ok' };
 }
 
+function scoreOpportunityForRouting(opp) {
+  const path = Array.isArray(opp?.path) ? opp.path : [];
+  const hopCount = path.length;
+  const complexityPenaltyUsd = Math.max(0, hopCount - 1) * state.config.routeComplexityPenaltyUsdPerHop;
+  const venueCount = new Set(path.map((leg) => String(leg).split('@')[1]).filter(Boolean)).size;
+  const dexDiversityBonusUsd = venueCount * state.config.routeDexDiversityBonusUsd;
+  const routingScoreUsd = +((opp?.netProfitUsd || 0) - complexityPenaltyUsd + dexDiversityBonusUsd).toFixed(4);
+
+  return {
+    hopCount,
+    venueCount,
+    complexityPenaltyUsd: +complexityPenaltyUsd.toFixed(4),
+    dexDiversityBonusUsd: +dexDiversityBonusUsd.toFixed(4),
+    routingScoreUsd
+  };
+}
+
+function buildBestPathPlan(assessedOpportunities = []) {
+  const viable = assessedOpportunities.filter((x) => x && x.risk && x.risk.pass && x.opp);
+  const ranked = viable
+    .map((x) => {
+      const routing = scoreOpportunityForRouting(x.opp);
+      return {
+        ...x,
+        routing
+      };
+    })
+    .sort((a, b) => b.routing.routingScoreUsd - a.routing.routingScoreUsd || b.opp.netProfitUsd - a.opp.netProfitUsd);
+
+  return {
+    selected: ranked[0] || null,
+    ranked
+  };
+}
+
 function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
 
@@ -735,7 +772,8 @@ function runReplayBacktest(snapshots = []) {
         source: 'replay'
       });
       const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
-      const selected = assessed.find((x) => x.risk.pass) || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' } };
+      const routePlan = buildBestPathPlan(assessed);
+      const selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
 
       let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason, gasCostUsd: 0, netAfterGasUsd: 0 };
       if (selected.risk.pass) result = executeOpportunity(selected.opp);
@@ -746,6 +784,7 @@ function runReplayBacktest(snapshots = []) {
         reason: result.reason,
         routeType: selected.opp?.type || 'none',
         netProfitUsd: selected.opp?.netProfitUsd || 0,
+        routingScoreUsd: selected.routing?.routingScoreUsd || 0,
         gasCostUsd: result.gasCostUsd || 0,
         realizedProfitUsd: result.realizedProfitUsd || 0
       });
@@ -783,7 +822,8 @@ function runOnce() {
   try {
     opportunities = scanOpportunities();
     const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
-    selected = assessed.find((x) => x.risk.pass) || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' } };
+    const routePlan = buildBestPathPlan(assessed);
+    selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
   } catch (err) {
     const failRecord = {
       ts: new Date().toISOString(),
@@ -822,6 +862,9 @@ function runOnce() {
     feeUsd: selected.opp?.feeUsd || 0,
     slippageUsd: selected.opp?.slippageUsd || 0,
     netProfitUsd: selected.opp?.netProfitUsd || 0,
+    routingScoreUsd: selected.routing?.routingScoreUsd || 0,
+    routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
+    routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
     gasCostUsd: result.gasCostUsd || 0,
     netAfterGasUsd: result.netAfterGasUsd || 0,
     tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
@@ -851,6 +894,8 @@ module.exports = {
   detectTwoPool,
   detectTriangular,
   riskCheck,
+  scoreOpportunityForRouting,
+  buildBestPathPlan,
   executeOpportunity,
   buildAtomicExecutionPlan,
   buildOnchainExecutionPlan,

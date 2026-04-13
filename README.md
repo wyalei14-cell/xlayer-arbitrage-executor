@@ -18,6 +18,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
+  - best-path builder ranks single-hop vs multi-hop routes with complexity penalty + DEX-diversity bonus (router-ready scoring)
 - Profit model:
   - gross profit
   - fees
@@ -99,6 +100,8 @@ Default runtime risk config in `src/engine.js`:
 - `failClosedOnMissingOnchainOS` (default `true`)
 - `nativeTokenPriceUsd` (default `45`)
 - `gasSafetyMultiplier` (default `1.15`)
+- `routeComplexityPenaltyUsdPerHop` (default `0.2`) penalizes multi-hop route complexity in best-path ranking
+- `routeDexDiversityBonusUsd` (default `0.05`) small bonus for route venue diversity in best-path ranking
 - `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
 - `preferAtomicExecution` (default `true`) enforces bundle-first fail-closed execution planning
 - `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan

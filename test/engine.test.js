@@ -11,6 +11,8 @@ const {
   detectTwoPool,
   detectTriangular,
   riskCheck,
+  scoreOpportunityForRouting,
+  buildBestPathPlan,
   executeOpportunity,
   buildAtomicExecutionPlan,
   buildOnchainExecutionPlan,
@@ -96,6 +98,45 @@ test('riskCheck blocks low-liquidity opportunities', () => {
   const out = riskCheck(opp);
   assert.equal(out.pass, false);
   assert.equal(out.reason, 'liquidity-too-low');
+});
+
+test('scoreOpportunityForRouting applies complexity penalty and venue bonus', () => {
+  const out = scoreOpportunityForRouting({
+    netProfitUsd: 5,
+    path: ['USDC->ETH@Uni', 'ETH->OKB@Sync', 'OKB->USDC@Uni']
+  });
+
+  assert.equal(out.hopCount, 3);
+  assert.equal(out.venueCount, 2);
+  assert.equal(out.complexityPenaltyUsd, 0.4);
+  assert.equal(out.dexDiversityBonusUsd, 0.1);
+  assert.equal(out.routingScoreUsd, 4.7);
+});
+
+test('buildBestPathPlan picks highest routing score among risk-passing opportunities', () => {
+  const assessed = [
+    {
+      opp: {
+        type: 'triangular',
+        netProfitUsd: 4.9,
+        path: ['USDC->ETH@A', 'ETH->OKB@B', 'OKB->USDC@C']
+      },
+      risk: { pass: true, reason: 'ok' }
+    },
+    {
+      opp: {
+        type: 'two-pool',
+        netProfitUsd: 4.8,
+        path: ['USDC->OKB@A', 'OKB->USDC@B']
+      },
+      risk: { pass: true, reason: 'ok' }
+    }
+  ];
+
+  const plan = buildBestPathPlan(assessed);
+  assert.ok(plan.selected);
+  assert.equal(plan.selected.opp.type, 'two-pool');
+  assert.equal(plan.ranked.length, 2);
 });
 
 test('buildAtomicExecutionPlan flags flash-loan-ready funding for larger trade amounts', () => {
