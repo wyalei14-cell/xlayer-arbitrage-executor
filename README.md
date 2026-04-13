@@ -3,6 +3,10 @@
 NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 
 ## Features
+- Wallet-first session onboarding + persistence
+  - one-time wallet login (`wallet-login`) persisted to `data/runtime-state.json`
+  - mode switch: `paper` (default) vs `live` with fail-closed wallet requirement
+  - autopilot/mode/session state survives restarts
 - Quote adapters
   - `mock` adapter for local development
   - `live` adapter contract (via `QUOTE_ADAPTER_URL`) for OnchainOS-compatible quote service integration
@@ -33,9 +37,12 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Opportunity API:
   - `GET /opportunities`
   - `GET /config`
+  - `GET /session`
   - `GET /healthz`
   - `GET /control/autopilot/on`
   - `GET /control/autopilot/off`
+  - `GET /control/mode/paper`
+  - `GET /control/mode/live`
 - Strategy optimization:
   - adaptive scan interval
   - adaptive amount/profit threshold from recent history
@@ -50,6 +57,12 @@ npm run scan
 npm run autopilot
 npm run api
 npm test
+
+# wallet/session controls
+node src/cli.js status
+node src/cli.js wallet-login 0x1234567890abcdef1234567890abcdef12345678
+node src/cli.js mode live
+node src/cli.js wallet-logout
 ```
 
 ## Environment
@@ -71,4 +84,7 @@ Default runtime risk config in `src/engine.js`:
 
 ## Data output
 Execution log file:
-- `data/executions.jsonl` (includes `tradeAmountUsd` per attempt)
+- `data/executions.jsonl` (includes `tradeAmountUsd`, `mode`, and wallet context)
+
+Session state file:
+- `data/runtime-state.json` (autopilot + mode + wallet login persistence)

@@ -1,6 +1,39 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { state, validateMarket, detectTwoPool, detectTriangular, riskCheck, executeOpportunity, buildOnchainExecutionPlan } = require('../src/engine');
+const fs = require('fs');
+const path = require('path');
+const {
+  state,
+  validateMarket,
+  detectTwoPool,
+  detectTriangular,
+  riskCheck,
+  executeOpportunity,
+  buildOnchainExecutionPlan,
+  persistRuntimeState,
+  loadRuntimeState,
+  setMode,
+  walletLogin,
+  walletLogout
+} = require('../src/engine');
+
+const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
+
+function resetSession() {
+  state.autopilot = false;
+  state.session.mode = 'paper';
+  state.session.wallet = {
+    loggedIn: false,
+    provider: null,
+    address: null,
+    connectedAt: null
+  };
+}
+
+test.beforeEach(() => {
+  resetSession();
+  if (fs.existsSync(runtimeStateFile)) fs.unlinkSync(runtimeStateFile);
+});
 
 test('validateMarket fails closed on missing fields', () => {
   assert.throws(() => validateMarket([{ dex: 'X' }]), /missing quote field/);
@@ -43,10 +76,7 @@ test('detectTwoPool caps trade size by liquidity usage', () => {
 test('riskCheck blocks low-liquidity opportunities', () => {
   const opp = {
     path: ['USDC->OKB@A', 'OKB->USDC@B'],
-    legs: [
-      { liqUsd: 49_000 },
-      { liqUsd: 100_000 }
-    ],
+    legs: [{ liqUsd: 49_000 }, { liqUsd: 100_000 }],
     tradeAmountUsd: 100,
     slippageUsd: 0.5,
     netProfitUsd: 10
@@ -56,7 +86,7 @@ test('riskCheck blocks low-liquidity opportunities', () => {
   assert.equal(out.reason, 'liquidity-too-low');
 });
 
-test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing env', () => {
+test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing env/session', () => {
   const prev = process.env.WALLET_ADAPTER;
   const prevAddress = process.env.WALLET_ADDRESS;
   process.env.WALLET_ADAPTER = 'live';
@@ -72,9 +102,10 @@ test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing 
   else process.env.WALLET_ADDRESS = prevAddress;
 });
 
-test('executeOpportunity blocks when security scan flags transaction', () => {
+test('executeOpportunity blocks when security scan flags transaction in live mode', () => {
   const prev = process.env.SECURITY_FORCE_BLOCK;
   process.env.SECURITY_FORCE_BLOCK = 'true';
+  setMode('live');
 
   const out = executeOpportunity({
     path: ['USDC->OKB@A', 'OKB->USDC@B'],
@@ -89,4 +120,24 @@ test('executeOpportunity blocks when security scan flags transaction', () => {
 
   if (prev === undefined) delete process.env.SECURITY_FORCE_BLOCK;
   else process.env.SECURITY_FORCE_BLOCK = prev;
+});
+
+test('runtime state persists mode and wallet session', () => {
+  setMode('live');
+  walletLogin({ address: '0x1234567890abcdef1234567890abcdef12345678', provider: 'agentic-wallet' });
+  persistRuntimeState();
+
+  resetSession();
+  loadRuntimeState();
+
+  assert.equal(state.session.mode, 'live');
+  assert.equal(state.session.wallet.loggedIn, true);
+  assert.equal(state.session.wallet.address, '0x1234567890abcdef1234567890abcdef12345678');
+});
+
+test('wallet logout clears persisted session', () => {
+  walletLogin({ address: '0x1234567890abcdef1234567890abcdef12345678', provider: 'agentic-wallet' });
+  walletLogout();
+  assert.equal(state.session.wallet.loggedIn, false);
+  assert.equal(state.session.wallet.address, null);
 });

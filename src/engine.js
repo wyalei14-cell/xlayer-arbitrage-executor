@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const RUNTIME_STATE_FILE = path.join(process.cwd(), 'data', 'runtime-state.json');
+
 const state = {
   autopilot: false,
   config: {
@@ -16,6 +18,15 @@ const state = {
     maxLiquidityUsagePct: 2,
     chainId: 196,
     failClosedOnMissingOnchainOS: true
+  },
+  session: {
+    mode: 'paper',
+    wallet: {
+      loggedIn: false,
+      provider: null,
+      address: null,
+      connectedAt: null
+    }
   }
 };
 
@@ -25,6 +36,78 @@ function now() {
 
 function isHexAddress(v) {
   return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
+function loadRuntimeState() {
+  if (!fs.existsSync(RUNTIME_STATE_FILE)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(RUNTIME_STATE_FILE, 'utf8'));
+    if (typeof data.autopilot === 'boolean') state.autopilot = data.autopilot;
+    if (data.session && typeof data.session === 'object') {
+      state.session.mode = data.session.mode === 'live' ? 'live' : 'paper';
+      const wallet = data.session.wallet || {};
+      state.session.wallet = {
+        loggedIn: Boolean(wallet.loggedIn),
+        provider: wallet.provider || null,
+        address: wallet.address || null,
+        connectedAt: wallet.connectedAt || null
+      };
+    }
+  } catch (_) {
+    // fail-closed by ignoring unreadable persisted state
+  }
+}
+
+function persistRuntimeState() {
+  fs.mkdirSync(path.dirname(RUNTIME_STATE_FILE), { recursive: true });
+  fs.writeFileSync(
+    RUNTIME_STATE_FILE,
+    JSON.stringify(
+      {
+        autopilot: state.autopilot,
+        session: state.session
+      },
+      null,
+      2
+    )
+  );
+}
+
+function setAutopilot(enabled) {
+  state.autopilot = Boolean(enabled);
+  persistRuntimeState();
+  return state.autopilot;
+}
+
+function setMode(mode) {
+  const normalized = String(mode || '').toLowerCase();
+  if (!['paper', 'live'].includes(normalized)) throw new Error('invalid mode (expected paper|live)');
+  state.session.mode = normalized;
+  persistRuntimeState();
+  return state.session.mode;
+}
+
+function walletLogin({ address, provider = 'agentic-wallet' }) {
+  if (!isHexAddress(address)) throw new Error('wallet login failed: invalid address');
+  state.session.wallet = {
+    loggedIn: true,
+    provider,
+    address,
+    connectedAt: new Date().toISOString()
+  };
+  persistRuntimeState();
+  return state.session.wallet;
+}
+
+function walletLogout() {
+  state.session.wallet = {
+    loggedIn: false,
+    provider: null,
+    address: null,
+    connectedAt: null
+  };
+  persistRuntimeState();
+  return state.session.wallet;
 }
 
 function getAdapterMode(name) {
@@ -43,9 +126,13 @@ function walletAdapter() {
     return { provider: 'wallet-mock', address: '0x1111111111111111111111111111111111111111' };
   }
   if (mode === 'live') {
-    const address = requireEnv('WALLET_ADDRESS', 'wallet-check-failed');
+    const sessionAddress = state.session.wallet.loggedIn ? state.session.wallet.address : null;
+    const address = sessionAddress || process.env.WALLET_ADDRESS;
     if (!isHexAddress(address)) throw new Error('wallet-check-failed: invalid WALLET_ADDRESS');
-    return { provider: 'wallet-live', address };
+    return {
+      provider: state.session.wallet.provider || 'wallet-live',
+      address
+    };
   }
   throw new Error(`wallet-check-failed: unsupported WALLET_ADAPTER=${mode}`);
 }
@@ -67,7 +154,6 @@ function dexAdapter(opp, wallet) {
     };
   }
   if (mode === 'live') {
-    // interface placeholder: explicit requirements for future HTTP/client integration
     requireEnv('DEX_QUOTE_URL', 'dex-build-failed');
     requireEnv('DEX_ROUTER_ADDRESS', 'dex-build-failed');
     throw new Error('dex-build-failed: live adapter interface not wired (set DEX_ADAPTER=mock unless integration client is provided)');
@@ -306,6 +392,18 @@ function riskCheck(opp) {
 
 function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
+
+  if (state.session.mode === 'paper') {
+    const paperHash = 'paper-' + Buffer.from(`${Date.now()}-${Math.random()}`).toString('hex').slice(0, 16);
+    return {
+      success: true,
+      txHash: paperHash,
+      realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
+      reason: 'paper-filled',
+      preflight: { ok: true, reason: 'paper-mode', provider: 'paper-executor' }
+    };
+  }
+
   const preflight = buildOnchainExecutionPlan(rechecked);
   if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
     return {
@@ -374,15 +472,20 @@ function runOnce() {
       txHash: null,
       success: false,
       realizedProfitUsd: 0,
+      mode: state.session.mode,
       reason: `scan-error:${err.message}`
     };
     appendRecord(failRecord);
-    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot };
+    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session };
   }
 
   let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
   if (selected.risk.pass && state.autopilot) {
-    result = executeOpportunity(selected.opp);
+    if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+      result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
+    } else {
+      result = executeOpportunity(selected.opp);
+    }
   }
 
   const record = {
@@ -396,14 +499,18 @@ function runOnce() {
     netProfitUsd: selected.opp?.netProfitUsd || 0,
     tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
     consideredCount: opportunities.length,
+    mode: state.session.mode,
+    walletAddress: state.session.wallet.address,
     onchainPreflight: result.preflight || null,
     ...result
   };
   appendRecord(record);
   optimizeFromHistory();
 
-  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot };
+  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session };
 }
+
+loadRuntimeState();
 
 module.exports = {
   state,
@@ -416,5 +523,11 @@ module.exports = {
   riskCheck,
   executeOpportunity,
   buildOnchainExecutionPlan,
-  liveMarket
+  liveMarket,
+  loadRuntimeState,
+  persistRuntimeState,
+  setAutopilot,
+  setMode,
+  walletLogin,
+  walletLogout
 };
