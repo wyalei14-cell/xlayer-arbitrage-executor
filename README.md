@@ -43,6 +43,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - recheck-before-send
   - bounded retries
   - OnchainOS preflight chain: Wallet -> DEX tx build -> Security tx scan -> Gateway estimate/simulate
+  - **preflight observability trace**: per-stage status + duration telemetry persisted for every paper/live execution attempt
   - **atomic preference path**: bundle-first execution plan with flash-loan-ready funding mode selection
   - **paper/live adapter parity**: paper mode also runs preflight (mock/live adapters) before fill
   - fail-closed preflight guard (blocks execution if any integration check fails, including atomic unavailability)
@@ -136,6 +137,9 @@ Default runtime risk config in `src/engine.js`:
 ## Data output
 Execution log file:
 - `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `executionCostUsd`, `netAfterGasUsd`, `netAfterAllCostsUsd`, `mode`, and wallet context)
+
+Preflight trace log file:
+- `data/preflight.jsonl` (one row per execution attempt with stage-by-stage telemetry: wallet/router/dex/security/gateway/atomic, per-stage `status`, per-stage `durationMs`, and total preflight latency)
 
 Alert log file:
 - `data/alerts.jsonl` (appends active alert snapshots; fail-closed operational visibility)

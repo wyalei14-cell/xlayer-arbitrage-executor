@@ -34,6 +34,7 @@ const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
 const executionsFile = path.join(process.cwd(), 'data', 'executions.jsonl');
 const wsQuotesFile = path.join(process.cwd(), 'data', 'ws-quotes.json');
 const mempoolFile = path.join(process.cwd(), 'data', 'mempool.json');
+const preflightFile = path.join(process.cwd(), 'data', 'preflight.jsonl');
 
 function resetSession() {
   state.autopilot = false;
@@ -53,6 +54,7 @@ test.beforeEach(() => {
   if (fs.existsSync(executionsFile)) fs.unlinkSync(executionsFile);
   if (fs.existsSync(wsQuotesFile)) fs.unlinkSync(wsQuotesFile);
   if (fs.existsSync(mempoolFile)) fs.unlinkSync(mempoolFile);
+  if (fs.existsSync(preflightFile)) fs.unlinkSync(preflightFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -210,6 +212,16 @@ test('buildOnchainExecutionPlan fail-closes when atomic execution is required bu
   else process.env.ATOMIC_FORCE_DISABLE = prev;
 });
 
+test('buildOnchainExecutionPlan includes stage telemetry for observability', () => {
+  const out = buildOnchainExecutionPlan({ path: ['USDC->OKB@A', 'OKB->USDC@B'], tradeAmountUsd: 120 });
+  assert.equal(out.ok, true);
+  assert.ok(out.telemetry);
+  assert.ok(out.telemetry.durationMs >= 0);
+  assert.ok(Array.isArray(out.telemetry.stages));
+  assert.ok(out.telemetry.stages.some((stage) => stage.name === 'wallet' && stage.status === 'ok'));
+  assert.ok(out.telemetry.stages.some((stage) => stage.name === 'gateway-preflight' && stage.status === 'ok'));
+});
+
 test('executeOpportunity blocks when security scan flags transaction in live mode', () => {
   const prev = process.env.SECURITY_FORCE_BLOCK;
   process.env.SECURITY_FORCE_BLOCK = 'true';
@@ -297,6 +309,25 @@ test('executeOpportunity includes router/bundle/flash-loan costs in profitabilit
   state.config.bundleFeeUsd = prevBundleFee;
   state.config.flashLoanFeeBps = prevFlashFee;
   state.config.routerFeeBps = prevRouterFee;
+});
+
+test('executeOpportunity writes preflight trace log for execution attempts', () => {
+  setMode('paper');
+
+  executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(fs.existsSync(preflightFile), true);
+  const lines = fs.readFileSync(preflightFile, 'utf8').trim().split('\n').filter(Boolean);
+  assert.ok(lines.length >= 1);
+  const row = JSON.parse(lines[lines.length - 1]);
+  assert.ok(row.telemetry.durationMs >= 0);
+  assert.ok(Array.isArray(row.telemetry.stages));
 });
 
 test('runtime state persists mode and wallet session', () => {

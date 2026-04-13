@@ -260,26 +260,77 @@ function buildAtomicExecutionPlan(opp, wallet, dex, gateway) {
 }
 
 function buildOnchainExecutionPlan(opp) {
+  const startedAtMs = now();
+  const telemetry = {
+    startedAt: new Date(startedAtMs).toISOString(),
+    durationMs: 0,
+    stage: 'init',
+    stages: []
+  };
+
+  const markStage = (name, status, startedMs, detail = null) => {
+    telemetry.stages.push({
+      name,
+      status,
+      durationMs: Math.max(0, now() - startedMs),
+      detail
+    });
+    telemetry.stage = name;
+  };
+
+  const finalize = (result) => {
+    telemetry.durationMs = Math.max(0, now() - startedAtMs);
+    return { ...result, telemetry };
+  };
+
   try {
+    const walletStartedMs = now();
     const wallet = walletAdapter();
+    markStage('wallet', 'ok', walletStartedMs, { provider: wallet.provider, address: wallet.address });
+
+    const routerStartedMs = now();
     const routerPlan = buildRouterPlan(opp);
     if (!routerPlan.ok) {
-      return { ok: false, reason: `router-build-failed:${routerPlan.reason}`, wallet, routerPlan };
+      markStage('router', 'error', routerStartedMs, { reason: routerPlan.reason });
+      return finalize({ ok: false, reason: `router-build-failed:${routerPlan.reason}`, wallet, routerPlan });
     }
+    markStage('router', 'ok', routerStartedMs, { provider: routerPlan.provider, hopCount: routerPlan.hopCount });
+
+    const dexStartedMs = now();
     const dex = dexAdapter(opp, wallet, routerPlan);
+    markStage('dex-build', 'ok', dexStartedMs, { provider: dex.provider, routeId: dex.routeId });
+
+    const securityStartedMs = now();
     const security = securityAdapter(opp, dex.tx);
     if (!security.safe) {
-      return { ok: false, reason: `security-blocked:${security.reason}`, wallet, dex, security };
+      markStage('security-scan', 'blocked', securityStartedMs, { reason: security.reason, riskLevel: security.riskLevel });
+      return finalize({ ok: false, reason: `security-blocked:${security.reason}`, wallet, dex, security });
     }
+    markStage('security-scan', 'ok', securityStartedMs, { provider: security.provider, riskLevel: security.riskLevel });
+
+    const gatewayStartedMs = now();
     const gateway = onchainGatewayAdapter(dex.tx);
     if (!gateway.estimate?.gasLimit || !gateway.simulation?.ok) {
-      return { ok: false, reason: 'gateway-preflight-failed', wallet, dex, security, gateway };
+      markStage('gateway-preflight', 'error', gatewayStartedMs, {
+        gasLimit: gateway.estimate?.gasLimit || null,
+        simulationOk: Boolean(gateway.simulation?.ok)
+      });
+      return finalize({ ok: false, reason: 'gateway-preflight-failed', wallet, dex, security, gateway });
     }
+    markStage('gateway-preflight', 'ok', gatewayStartedMs, {
+      provider: gateway.provider,
+      gasLimit: gateway.estimate.gasLimit
+    });
+
+    const atomicStartedMs = now();
     const atomic = buildAtomicExecutionPlan(opp, wallet, dex, gateway);
     if (atomic.required && !atomic.ready) {
-      return { ok: false, reason: `atomic-preflight-failed:${atomic.reason}`, wallet, dex, security, gateway, atomic };
+      markStage('atomic-plan', 'error', atomicStartedMs, { reason: atomic.reason, strategy: atomic.strategy });
+      return finalize({ ok: false, reason: `atomic-preflight-failed:${atomic.reason}`, wallet, dex, security, gateway, atomic });
     }
-    return {
+    markStage('atomic-plan', 'ok', atomicStartedMs, { strategy: atomic.strategy, fundingMode: atomic.fundingMode });
+
+    return finalize({
       ok: true,
       reason: 'ok',
       wallet,
@@ -287,9 +338,16 @@ function buildOnchainExecutionPlan(opp) {
       security,
       gateway,
       atomic
-    };
+    });
   } catch (err) {
-    return { ok: false, reason: `onchain-preflight-error:${err.message}` };
+    telemetry.stages.push({
+      name: telemetry.stage === 'init' ? 'wallet' : telemetry.stage,
+      status: 'error',
+      durationMs: 0,
+      detail: { reason: err.message }
+    });
+    telemetry.stage = 'error';
+    return finalize({ ok: false, reason: `onchain-preflight-error:${err.message}` });
   }
 }
 
@@ -768,6 +826,7 @@ function executeOpportunity(opp) {
       ? buildOnchainExecutionPlan(rechecked)
       : { ok: true, reason: 'paper-preflight-disabled', provider: 'paper-executor' };
 
+    appendPreflightRecord(preflight, rechecked);
     const economics = evaluateExecutionEconomics(rechecked, preflight);
     if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
       return {
@@ -812,6 +871,7 @@ function executeOpportunity(opp) {
   }
 
   const preflight = buildOnchainExecutionPlan(rechecked);
+  appendPreflightRecord(preflight, rechecked);
   const economics = evaluateExecutionEconomics(rechecked, preflight);
   if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
     return {
@@ -869,6 +929,25 @@ function appendRecord(obj) {
   const file = path.join(process.cwd(), 'data', 'executions.jsonl');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+
+function appendPreflightRecord(preflight, opp = null) {
+  if (!preflight || !preflight.telemetry) return;
+  const file = path.join(process.cwd(), 'data', 'preflight.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  fs.appendFileSync(
+    file,
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      mode: state.session.mode,
+      ok: Boolean(preflight.ok),
+      reason: preflight.reason,
+      routeType: opp?.type || 'unknown',
+      path: opp?.path || [],
+      telemetry: preflight.telemetry
+    }) + '\n'
+  );
 }
 
 function readExecutionLedger(limit = 200) {
