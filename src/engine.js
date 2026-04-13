@@ -21,6 +21,8 @@ const state = {
     nativeTokenPriceUsd: 45,
     gasSafetyMultiplier: 1.15,
     preflightInPaper: true,
+    preferAtomicExecution: true,
+    flashLoanMinUsd: 250,
     enableStreamingSignals: true,
     wsQuoteFile: path.join(process.cwd(), 'data', 'ws-quotes.json'),
     mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
@@ -209,6 +211,27 @@ function onchainGatewayAdapter(txPlan) {
   throw new Error(`gateway-check-failed: unsupported GATEWAY_ADAPTER=${mode}`);
 }
 
+function buildAtomicExecutionPlan(opp, wallet, dex, gateway) {
+  const forceDisable = String(process.env.ATOMIC_FORCE_DISABLE || 'false') === 'true';
+  const routeLegs = Array.isArray(opp?.path) ? opp.path : [];
+  const fundingMode = (opp?.tradeAmountUsd || 0) >= state.config.flashLoanMinUsd ? 'flash-loan-ready' : 'wallet-balance';
+
+  return {
+    required: Boolean(state.config.preferAtomicExecution),
+    ready: !forceDisable,
+    strategy: state.config.preferAtomicExecution ? 'bundle' : 'direct',
+    fundingMode,
+    routeLegs,
+    tx: {
+      chainId: dex?.tx?.chainId,
+      from: wallet?.address,
+      to: dex?.tx?.to,
+      gasLimit: gateway?.estimate?.gasLimit || null
+    },
+    reason: forceDisable ? 'atomic-disabled-by-env' : 'ok'
+  };
+}
+
 function buildOnchainExecutionPlan(opp) {
   try {
     const wallet = walletAdapter();
@@ -221,13 +244,18 @@ function buildOnchainExecutionPlan(opp) {
     if (!gateway.estimate?.gasLimit || !gateway.simulation?.ok) {
       return { ok: false, reason: 'gateway-preflight-failed', wallet, dex, security, gateway };
     }
+    const atomic = buildAtomicExecutionPlan(opp, wallet, dex, gateway);
+    if (atomic.required && !atomic.ready) {
+      return { ok: false, reason: `atomic-preflight-failed:${atomic.reason}`, wallet, dex, security, gateway, atomic };
+    }
     return {
       ok: true,
       reason: 'ok',
       wallet,
       dex,
       security,
-      gateway
+      gateway,
+      atomic
     };
   } catch (err) {
     return { ok: false, reason: `onchain-preflight-error:${err.message}` };
@@ -824,6 +852,7 @@ module.exports = {
   detectTriangular,
   riskCheck,
   executeOpportunity,
+  buildAtomicExecutionPlan,
   buildOnchainExecutionPlan,
   liveMarket,
   loadRuntimeState,

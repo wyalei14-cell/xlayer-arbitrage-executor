@@ -12,6 +12,7 @@ const {
   detectTriangular,
   riskCheck,
   executeOpportunity,
+  buildAtomicExecutionPlan,
   buildOnchainExecutionPlan,
   persistRuntimeState,
   loadRuntimeState,
@@ -97,6 +98,20 @@ test('riskCheck blocks low-liquidity opportunities', () => {
   assert.equal(out.reason, 'liquidity-too-low');
 });
 
+test('buildAtomicExecutionPlan flags flash-loan-ready funding for larger trade amounts', () => {
+  const out = buildAtomicExecutionPlan(
+    { path: ['USDC->OKB@A', 'OKB->USDC@B'], tradeAmountUsd: 500 },
+    { address: '0x1111111111111111111111111111111111111111' },
+    { tx: { chainId: 196, to: '0x2222222222222222222222222222222222222222' } },
+    { estimate: { gasLimit: 320000 } }
+  );
+
+  assert.equal(out.required, true);
+  assert.equal(out.ready, true);
+  assert.equal(out.strategy, 'bundle');
+  assert.equal(out.fundingMode, 'flash-loan-ready');
+});
+
 test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing env/session', () => {
   const prev = process.env.WALLET_ADAPTER;
   const prevAddress = process.env.WALLET_ADDRESS;
@@ -111,6 +126,18 @@ test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing 
   else process.env.WALLET_ADAPTER = prev;
   if (prevAddress === undefined) delete process.env.WALLET_ADDRESS;
   else process.env.WALLET_ADDRESS = prevAddress;
+});
+
+test('buildOnchainExecutionPlan fail-closes when atomic execution is required but unavailable', () => {
+  const prev = process.env.ATOMIC_FORCE_DISABLE;
+  process.env.ATOMIC_FORCE_DISABLE = 'true';
+
+  const out = buildOnchainExecutionPlan({ path: ['USDC->OKB@A'], tradeAmountUsd: 300 });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /atomic-preflight-failed/);
+
+  if (prev === undefined) delete process.env.ATOMIC_FORCE_DISABLE;
+  else process.env.ATOMIC_FORCE_DISABLE = prev;
 });
 
 test('executeOpportunity blocks when security scan flags transaction in live mode', () => {

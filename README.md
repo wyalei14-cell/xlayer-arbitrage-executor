@@ -36,8 +36,9 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - recheck-before-send
   - bounded retries
   - OnchainOS preflight chain: Wallet -> DEX tx build -> Security tx scan -> Gateway estimate/simulate
+  - **atomic preference path**: bundle-first execution plan with flash-loan-ready funding mode selection
   - **paper/live adapter parity**: paper mode also runs preflight (mock/live adapters) before fill
-  - fail-closed preflight guard (blocks execution if any integration check fails)
+  - fail-closed preflight guard (blocks execution if any integration check fails, including atomic unavailability)
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
@@ -86,6 +87,7 @@ node src/cli.js wallet-logout
 - `GATEWAY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
+- `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)
 - `PORT=8787` (api server)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
@@ -98,6 +100,8 @@ Default runtime risk config in `src/engine.js`:
 - `nativeTokenPriceUsd` (default `45`)
 - `gasSafetyMultiplier` (default `1.15`)
 - `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
+- `preferAtomicExecution` (default `true`) enforces bundle-first fail-closed execution planning
+- `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan
 
 ## Data output
 Execution log file:
