@@ -14,10 +14,13 @@ const {
   loadRuntimeState,
   setMode,
   walletLogin,
-  walletLogout
+  walletLogout,
+  readExecutionLedger,
+  getPnlMetrics
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
+const executionsFile = path.join(process.cwd(), 'data', 'executions.jsonl');
 
 function resetSession() {
   state.autopilot = false;
@@ -33,6 +36,7 @@ function resetSession() {
 test.beforeEach(() => {
   resetSession();
   if (fs.existsSync(runtimeStateFile)) fs.unlinkSync(runtimeStateFile);
+  if (fs.existsSync(executionsFile)) fs.unlinkSync(executionsFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -140,4 +144,41 @@ test('wallet logout clears persisted session', () => {
   walletLogout();
   assert.equal(state.session.wallet.loggedIn, false);
   assert.equal(state.session.wallet.address, null);
+});
+
+test('readExecutionLedger ignores malformed rows', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    [
+      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 3.2, mode: 'paper' }),
+      '{bad json',
+      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'none', success: false, realizedProfitUsd: 0, mode: 'live' })
+    ].join('\n') + '\n'
+  );
+
+  const rows = readExecutionLedger(10);
+  assert.equal(rows.length, 2);
+});
+
+test('getPnlMetrics returns execution and pnl aggregates', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    [
+      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 4.5, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.5, mode: 'live' })
+    ].join('\n') + '\n'
+  );
+
+  const metrics = getPnlMetrics({ limit: 20 });
+  assert.equal(metrics.sampleSize, 3);
+  assert.equal(metrics.opportunitiesSeen, 3);
+  assert.equal(metrics.executedCount, 2);
+  assert.equal(metrics.totalRealizedPnlUsd, 7);
+  assert.equal(metrics.byMode.paper.runs, 2);
+  assert.equal(metrics.byMode.live.executed, 1);
 });

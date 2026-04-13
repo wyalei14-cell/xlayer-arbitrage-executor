@@ -437,6 +437,63 @@ function appendRecord(obj) {
   fs.appendFileSync(file, JSON.stringify(obj) + '\n');
 }
 
+function readExecutionLedger(limit = 200) {
+  const file = path.join(process.cwd(), 'data', 'executions.jsonl');
+  if (!fs.existsSync(file)) return [];
+
+  const raw = fs.readFileSync(file, 'utf8').trim();
+  if (!raw) return [];
+
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .slice(-Math.max(1, limit))
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch (_) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function getPnlMetrics({ limit = 200 } = {}) {
+  const rows = readExecutionLedger(limit);
+  const trades = rows.filter((r) => r.routeType !== 'none');
+  const executed = trades.filter((r) => r.success);
+  const totalRealizedPnlUsd = +rows.reduce((s, r) => s + (r.realizedProfitUsd || 0), 0).toFixed(4);
+  const avgRealizedPnlUsd = +(totalRealizedPnlUsd / Math.max(executed.length, 1)).toFixed(4);
+
+  const byMode = rows.reduce(
+    (acc, r) => {
+      const mode = r.mode === 'live' ? 'live' : 'paper';
+      acc[mode].runs += 1;
+      acc[mode].realizedPnlUsd = +(acc[mode].realizedPnlUsd + (r.realizedProfitUsd || 0)).toFixed(4);
+      if (r.success) acc[mode].executed += 1;
+      return acc;
+    },
+    {
+      paper: { runs: 0, executed: 0, realizedPnlUsd: 0 },
+      live: { runs: 0, executed: 0, realizedPnlUsd: 0 }
+    }
+  );
+
+  const lastRecord = rows.at(-1) || null;
+
+  return {
+    sampleSize: rows.length,
+    opportunitiesSeen: trades.length,
+    executedCount: executed.length,
+    executionRate: +(executed.length / Math.max(trades.length, 1)).toFixed(4),
+    totalRealizedPnlUsd,
+    avgRealizedPnlUsd,
+    byMode,
+    recent: rows.slice(-20),
+    lastRecord
+  };
+}
+
 function optimizeFromHistory() {
   const file = path.join(process.cwd(), 'data', 'executions.jsonl');
   if (!fs.existsSync(file)) return state.config;
@@ -529,5 +586,7 @@ module.exports = {
   setAutopilot,
   setMode,
   walletLogin,
-  walletLogout
+  walletLogout,
+  readExecutionLedger,
+  getPnlMetrics
 };

@@ -34,8 +34,10 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
-- Opportunity API:
+- Opportunity + operations API:
   - `GET /opportunities`
+  - `GET /metrics` (PnL ledger aggregates + recent execution window)
+  - `GET /dashboard` (lightweight HTML dashboard)
   - `GET /config`
   - `GET /session`
   - `GET /healthz`

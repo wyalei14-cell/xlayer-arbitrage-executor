@@ -6,10 +6,43 @@ const {
   setAutopilot,
   setMode,
   walletLogin,
-  walletLogout
+  walletLogout,
+  getPnlMetrics
 } = require('./engine');
 
 const cmd = process.argv[2] || 'scan';
+
+function renderDashboard(metrics) {
+  const last = metrics.lastRecord;
+  return `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>XLayer Arbitrage Dashboard</title>
+<style>
+body { font-family: sans-serif; margin: 24px; color: #0f172a; }
+.card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 12px; }
+code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
+</style></head>
+<body>
+<h1>XLayer Arbitrage Executor</h1>
+<div class="grid">
+  <div class="card"><strong>Total Realized PnL</strong><br/>$${metrics.totalRealizedPnlUsd}</div>
+  <div class="card"><strong>Executed Trades</strong><br/>${metrics.executedCount}</div>
+  <div class="card"><strong>Execution Rate</strong><br/>${(metrics.executionRate * 100).toFixed(2)}%</div>
+  <div class="card"><strong>Avg Realized PnL</strong><br/>$${metrics.avgRealizedPnlUsd}</div>
+</div>
+<div class="card">
+  <strong>Paper Mode</strong>: runs=${metrics.byMode.paper.runs}, executed=${metrics.byMode.paper.executed}, pnl=$${metrics.byMode.paper.realizedPnlUsd}<br/>
+  <strong>Live Mode</strong>: runs=${metrics.byMode.live.runs}, executed=${metrics.byMode.live.executed}, pnl=$${metrics.byMode.live.realizedPnlUsd}
+</div>
+<div class="card">
+  <strong>Autopilot:</strong> ${state.autopilot} | <strong>Mode:</strong> ${state.session.mode}<br/>
+  <strong>Wallet:</strong> ${state.session.wallet.address || 'not logged in'}<br/>
+  <strong>Last Record:</strong> ${last ? `${last.ts} / ${last.reason} / pnl=$${last.realizedProfitUsd}` : 'none'}
+</div>
+<p>JSON endpoints: <code>/metrics</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code></p>
+</body></html>`;
+}
 
 if (cmd === 'scan') {
   console.log(JSON.stringify(runOnce(), null, 2));
@@ -106,6 +139,13 @@ if (cmd === 'api') {
     }
     if (req.url === '/config') {
       return res.end(JSON.stringify({ config: state.config, autopilot: state.autopilot }));
+    }
+    if (req.url === '/metrics') {
+      return res.end(JSON.stringify({ metrics: getPnlMetrics() }));
+    }
+    if (req.url === '/dashboard') {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      return res.end(renderDashboard(getPnlMetrics()));
     }
     if (req.url === '/healthz') {
       return res.end(JSON.stringify({ ok: true, ts: Date.now() }));
