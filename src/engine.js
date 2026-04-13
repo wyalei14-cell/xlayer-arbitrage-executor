@@ -17,7 +17,9 @@ const state = {
     minLegLiquidityUsd: 50_000,
     maxLiquidityUsagePct: 2,
     chainId: 196,
-    failClosedOnMissingOnchainOS: true
+    failClosedOnMissingOnchainOS: true,
+    nativeTokenPriceUsd: 45,
+    gasSafetyMultiplier: 1.15
   },
   session: {
     mode: 'paper',
@@ -268,6 +270,25 @@ function estimateLegCost(amountUsd, feePct, slippagePct) {
   return amountUsd * ((feePct + slippagePct) / 100);
 }
 
+function estimateGasCostUsd(gatewayEstimate) {
+  if (!gatewayEstimate) return 0;
+  const gasLimit = Number(gatewayEstimate.gasLimit || 0);
+  const maxFeePerGasGwei = Number(gatewayEstimate.maxFeePerGasGwei || 0);
+  const nativeTokenPriceUsd = Number(process.env.NATIVE_TOKEN_PRICE_USD || state.config.nativeTokenPriceUsd || 0);
+  if (!(gasLimit > 0) || !(maxFeePerGasGwei > 0) || !(nativeTokenPriceUsd > 0)) return 0;
+
+  const gasNative = gasLimit * maxFeePerGasGwei * 1e-9;
+  const baseGasUsd = gasNative * nativeTokenPriceUsd;
+  return +(baseGasUsd * state.config.gasSafetyMultiplier).toFixed(6);
+}
+
+function evaluateExecutionEconomics(opp, preflight) {
+  const grossNetUsd = Number(opp?.netProfitUsd || 0);
+  const gasCostUsd = estimateGasCostUsd(preflight?.gateway?.estimate);
+  const netAfterGasUsd = +(grossNetUsd - gasCostUsd).toFixed(4);
+  return { grossNetUsd, gasCostUsd, netAfterGasUsd };
+}
+
 function liquidityBoundedAmount(legs) {
   const minLiqUsd = Math.min(...legs.map((x) => x.liqUsd));
   const maxByLiquidity = minLiqUsd * (state.config.maxLiquidityUsagePct / 100);
@@ -394,41 +415,74 @@ function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
 
   if (state.session.mode === 'paper') {
+    const paperGasCostUsd = +(Math.max(0.01, rechecked.tradeAmountUsd * 0.0005)).toFixed(4);
+    const paperNetAfterGasUsd = +((rechecked.netProfitUsd || 0) - paperGasCostUsd).toFixed(4);
+    if (paperNetAfterGasUsd < state.config.minNetProfitUsd) {
+      return {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: 'profit-too-low-after-gas',
+        gasCostUsd: paperGasCostUsd,
+        netAfterGasUsd: paperNetAfterGasUsd,
+        preflight: { ok: true, reason: 'paper-mode', provider: 'paper-executor' }
+      };
+    }
+
     const paperHash = 'paper-' + Buffer.from(`${Date.now()}-${Math.random()}`).toString('hex').slice(0, 16);
     return {
       success: true,
       txHash: paperHash,
-      realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
+      realizedProfitUsd: +(paperNetAfterGasUsd * 0.92).toFixed(4),
       reason: 'paper-filled',
+      gasCostUsd: paperGasCostUsd,
+      netAfterGasUsd: paperNetAfterGasUsd,
       preflight: { ok: true, reason: 'paper-mode', provider: 'paper-executor' }
     };
   }
 
   const preflight = buildOnchainExecutionPlan(rechecked);
+  const economics = evaluateExecutionEconomics(rechecked, preflight);
   if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
     return {
       success: false,
       txHash: null,
       realizedProfitUsd: 0,
       reason: preflight.reason,
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
+      preflight
+    };
+  }
+
+  if (economics.netAfterGasUsd < state.config.minNetProfitUsd) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: 'profit-too-low-after-gas',
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
       preflight
     };
   }
 
   for (let attempt = 0; attempt <= state.config.maxExecutionRetries; attempt++) {
     if (rechecked.netProfitUsd <= 0) {
-      return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed', preflight };
+      return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd, preflight };
     }
     const txHash = '0x' + Buffer.from(`${Date.now()}-${attempt}`).toString('hex').slice(0, 64).padEnd(64, '0');
     return {
       success: true,
       txHash,
-      realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
+      realizedProfitUsd: +(economics.netAfterGasUsd * 0.92).toFixed(4),
       reason: `executed-attempt-${attempt + 1}`,
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
       preflight
     };
   }
-  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted', preflight };
+  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd, preflight };
 }
 
 function appendRecord(obj) {
@@ -463,6 +517,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
   const trades = rows.filter((r) => r.routeType !== 'none');
   const executed = trades.filter((r) => r.success);
   const totalRealizedPnlUsd = +rows.reduce((s, r) => s + (r.realizedProfitUsd || 0), 0).toFixed(4);
+  const totalGasCostUsd = +rows.reduce((s, r) => s + (r.gasCostUsd || 0), 0).toFixed(4);
   const avgRealizedPnlUsd = +(totalRealizedPnlUsd / Math.max(executed.length, 1)).toFixed(4);
 
   const byMode = rows.reduce(
@@ -487,6 +542,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
     executedCount: executed.length,
     executionRate: +(executed.length / Math.max(trades.length, 1)).toFixed(4),
     totalRealizedPnlUsd,
+    totalGasCostUsd,
     avgRealizedPnlUsd,
     byMode,
     recent: rows.slice(-20),
@@ -554,6 +610,8 @@ function runOnce() {
     feeUsd: selected.opp?.feeUsd || 0,
     slippageUsd: selected.opp?.slippageUsd || 0,
     netProfitUsd: selected.opp?.netProfitUsd || 0,
+    gasCostUsd: result.gasCostUsd || 0,
+    netAfterGasUsd: result.netAfterGasUsd || 0,
     tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
     consideredCount: opportunities.length,
     mode: state.session.mode,

@@ -17,7 +17,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - gross profit
   - fees
   - slippage
-  - net profit
+  - pre-execution gas estimate (with safety multiplier)
+  - net profit after gas (must stay above threshold before execution)
 - Risk engine:
   - fail-closed quote validation (missing fields / stale snapshots)
   - min profit threshold
@@ -76,6 +77,7 @@ node src/cli.js wallet-logout
 - `SECURITY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `GATEWAY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
+- `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `PORT=8787` (api server)
 
 ## Config highlights
@@ -83,10 +85,12 @@ Default runtime risk config in `src/engine.js`:
 - `minLegLiquidityUsd` (default `50000`)
 - `maxLiquidityUsagePct` (default `2`)
 - `failClosedOnMissingOnchainOS` (default `true`)
+- `nativeTokenPriceUsd` (default `45`)
+- `gasSafetyMultiplier` (default `1.15`)
 
 ## Data output
 Execution log file:
-- `data/executions.jsonl` (includes `tradeAmountUsd`, `mode`, and wallet context)
+- `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `netAfterGasUsd`, `mode`, and wallet context)
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)

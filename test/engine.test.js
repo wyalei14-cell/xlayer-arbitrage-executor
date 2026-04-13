@@ -126,6 +126,27 @@ test('executeOpportunity blocks when security scan flags transaction in live mod
   else process.env.SECURITY_FORCE_BLOCK = prev;
 });
 
+test('executeOpportunity blocks when gas-adjusted net profit is below threshold', () => {
+  const prevPrice = process.env.NATIVE_TOKEN_PRICE_USD;
+  process.env.NATIVE_TOKEN_PRICE_USD = '1000000';
+  setMode('live');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.equal(out.reason, 'profit-too-low-after-gas');
+  assert.ok(out.gasCostUsd > 8);
+
+  if (prevPrice === undefined) delete process.env.NATIVE_TOKEN_PRICE_USD;
+  else process.env.NATIVE_TOKEN_PRICE_USD = prevPrice;
+});
+
 test('runtime state persists mode and wallet session', () => {
   setMode('live');
   walletLogin({ address: '0x1234567890abcdef1234567890abcdef12345678', provider: 'agentic-wallet' });
@@ -168,9 +189,9 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   fs.writeFileSync(
     ledgerFile,
     [
-      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 4.5, mode: 'paper' }),
-      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, mode: 'paper' }),
-      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.5, mode: 'live' })
+      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 4.5, gasCostUsd: 0.2, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, gasCostUsd: 0, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.5, gasCostUsd: 0.3, mode: 'live' })
     ].join('\n') + '\n'
   );
 
@@ -179,6 +200,7 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   assert.equal(metrics.opportunitiesSeen, 3);
   assert.equal(metrics.executedCount, 2);
   assert.equal(metrics.totalRealizedPnlUsd, 7);
+  assert.equal(metrics.totalGasCostUsd, 0.5);
   assert.equal(metrics.byMode.paper.runs, 2);
   assert.equal(metrics.byMode.live.executed, 1);
 });
