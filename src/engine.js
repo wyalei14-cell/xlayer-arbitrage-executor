@@ -35,6 +35,8 @@ const state = {
     enableStreamingSignals: true,
     wsQuoteFile: path.join(process.cwd(), 'data', 'ws-quotes.json'),
     mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
+    maxWsSignalAgeMs: Number(process.env.MAX_WS_SIGNAL_AGE_MS || 12_000),
+    maxMempoolSignalAgeMs: Number(process.env.MAX_MEMPOOL_SIGNAL_AGE_MS || 15_000),
     mempoolSlippageBpsPerPendingTx: 2,
     mempoolGasMultiplierPerPendingTx: 0.015,
     maxMempoolGasMultiplier: 2,
@@ -62,6 +64,8 @@ const state = {
     quoteSource: 'mock',
     wsQuoteCount: 0,
     pendingMempoolTxs: 0,
+    wsDroppedStale: 0,
+    mempoolDroppedStale: 0,
     gasPressureMultiplier: 1,
     listenerMode: 'poll',
     wsUpdatedAt: null,
@@ -320,11 +324,41 @@ function readArrayFileSafe(file) {
   }
 }
 
-function reloadStreamingCacheFromFiles() {
-  streamingCache.wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
-  streamingCache.pendingTxs = readArrayFileSafe(state.config.mempoolFile);
+function filterStaleSignals(rows, maxAgeMs) {
+  const out = [];
+  let dropped = 0;
+  const cutoff = now() - Math.max(0, Number(maxAgeMs) || 0);
+
+  for (const row of rows || []) {
+    const ts = Number(row?.ts || 0);
+    if (!(ts > 0) || ts < cutoff) {
+      dropped += 1;
+      continue;
+    }
+    out.push(row);
+  }
+
+  return { rows: out, dropped };
+}
+
+function refreshStreamingOverlay() {
+  const wsRaw = readArrayFileSafe(state.config.wsQuoteFile);
+  const mempoolRaw = readArrayFileSafe(state.config.mempoolFile);
+
+  const ws = filterStaleSignals(wsRaw, state.config.maxWsSignalAgeMs);
+  const mempool = filterStaleSignals(mempoolRaw, state.config.maxMempoolSignalAgeMs);
+
+  streamingCache.wsQuotes = ws.rows;
+  streamingCache.pendingTxs = mempool.rows;
   streamingCache.wsUpdatedAt = new Date().toISOString();
   streamingCache.mempoolUpdatedAt = new Date().toISOString();
+
+  state.runtimeSignals.wsDroppedStale = ws.dropped;
+  state.runtimeSignals.mempoolDroppedStale = mempool.dropped;
+}
+
+function reloadStreamingCacheFromFiles() {
+  refreshStreamingOverlay();
   streamingCache.initialized = true;
 }
 
@@ -337,6 +371,8 @@ function resetStreamingSignalCache() {
   streamingCache.pendingTxs = [];
   streamingCache.wsUpdatedAt = null;
   streamingCache.mempoolUpdatedAt = null;
+  state.runtimeSignals.wsDroppedStale = 0;
+  state.runtimeSignals.mempoolDroppedStale = 0;
 }
 
 function startStreamingSignalListeners() {
@@ -346,13 +382,11 @@ function startStreamingSignalListeners() {
   reloadStreamingCacheFromFiles();
 
   fs.watchFile(state.config.wsQuoteFile, { interval: 1000, persistent: false }, () => {
-    streamingCache.wsQuotes = readArrayFileSafe(state.config.wsQuoteFile);
-    streamingCache.wsUpdatedAt = new Date().toISOString();
+    refreshStreamingOverlay();
   });
 
   fs.watchFile(state.config.mempoolFile, { interval: 1000, persistent: false }, () => {
-    streamingCache.pendingTxs = readArrayFileSafe(state.config.mempoolFile);
-    streamingCache.mempoolUpdatedAt = new Date().toISOString();
+    refreshStreamingOverlay();
   });
 
   streamingCache.listenersStarted = true;
@@ -472,6 +506,8 @@ function loadMarketSync() {
     quoteSource: wsQuotes.length ? 'mock+ws' : 'mock',
     wsQuoteCount: wsQuotes.length,
     pendingMempoolTxs: pendingTxs.length,
+    wsDroppedStale: state.runtimeSignals.wsDroppedStale || 0,
+    mempoolDroppedStale: state.runtimeSignals.mempoolDroppedStale || 0,
     gasPressureMultiplier: +gasPressureMultiplier.toFixed(4),
     listenerMode: streamingCache.listenersStarted ? 'watch' : 'poll',
     wsUpdatedAt: streamingCache.wsUpdatedAt,
@@ -652,6 +688,8 @@ function scanOpportunitiesFromData({ quotes, pendingTxs = [], source = 'replay',
     quoteSource: source,
     wsQuoteCount,
     pendingMempoolTxs: pendingTxs.length,
+    wsDroppedStale: state.runtimeSignals.wsDroppedStale || 0,
+    mempoolDroppedStale: state.runtimeSignals.mempoolDroppedStale || 0,
     gasPressureMultiplier: +Math.min(
       state.config.maxMempoolGasMultiplier,
       1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx

@@ -18,7 +18,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Streaming listener path (websocket + mempool)
   - file-watch listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory
   - scanner consumes cached overlays without per-scan file parse
-  - listener health metadata exposed in `runtimeSignals` (`listenerMode`, `wsUpdatedAt`, `mempoolUpdatedAt`)
+  - stale signal filter drops old websocket/mempool events before routing/profit math (fail-closed freshness)
+  - listener health metadata exposed in `runtimeSignals` (`listenerMode`, `wsUpdatedAt`, `mempoolUpdatedAt`, stale-drop counters)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
@@ -104,6 +105,8 @@ node src/cli.js wallet-logout
 - `SOAK_INTERVAL_MS=1000` (delay between soak runs)
 - `SOAK_STOP_ON_CRITICAL=true|false` (stop soak early on critical alerts)
 - `PORT=8787` (api server)
+- `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
+- `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
 
@@ -122,6 +125,8 @@ Default runtime risk config in `src/engine.js`:
 - `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
 - `preferAtomicExecution` (default `true`) enforces bundle-first fail-closed execution planning
 - `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan
+- `maxWsSignalAgeMs` (default `12000`) freshness window for websocket overlay quotes
+- `maxMempoolSignalAgeMs` (default `15000`) freshness window for mempool pending tx overlays
 - `alertWindow` (default `20`) rolling sample size for runtime alert checks
 - `alertMaxConsecutiveFailures` (default `5`) critical alert threshold
 - `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5

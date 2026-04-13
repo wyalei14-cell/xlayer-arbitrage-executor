@@ -360,12 +360,13 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
 
 test('scanOpportunities applies mempool pressure to net profit', () => {
   fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+  const ts = Date.now();
   fs.writeFileSync(
     mempoolFile,
     JSON.stringify([
-      { tokenIn: 'USDC', tokenOut: 'OKB' },
-      { tokenIn: 'USDC', tokenOut: 'OKB' },
-      { tokenIn: 'USDC', tokenOut: 'OKB' }
+      { tokenIn: 'USDC', tokenOut: 'OKB', ts },
+      { tokenIn: 'USDC', tokenOut: 'OKB', ts },
+      { tokenIn: 'USDC', tokenOut: 'OKB', ts }
     ])
   );
 
@@ -392,6 +393,31 @@ test('scanOpportunities merges websocket quote overrides', () => {
   assert.equal(state.runtimeSignals.wsQuoteCount, 1);
   assert.equal(state.runtimeSignals.listenerMode, 'watch');
   assert.ok(state.runtimeSignals.wsUpdatedAt);
+});
+
+test('scanOpportunities drops stale websocket and mempool signals', () => {
+  fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+  const staleTs = Date.now() - 60_000;
+
+  fs.writeFileSync(
+    wsQuotesFile,
+    JSON.stringify([
+      { dex: 'UniswapV3', base: 'USDC', quote: 'OKB', price: 1.1, feePct: 0.3, slippagePct: 0.16, liqUsd: 200000, ts: staleTs }
+    ])
+  );
+  fs.writeFileSync(
+    mempoolFile,
+    JSON.stringify([
+      { tokenIn: 'USDC', tokenOut: 'OKB', ts: staleTs }
+    ])
+  );
+
+  scanOpportunities();
+  assert.equal(state.runtimeSignals.quoteSource, 'mock');
+  assert.equal(state.runtimeSignals.wsQuoteCount, 0);
+  assert.equal(state.runtimeSignals.pendingMempoolTxs, 0);
+  assert.ok(state.runtimeSignals.wsDroppedStale >= 1);
+  assert.ok(state.runtimeSignals.mempoolDroppedStale >= 1);
 });
 
 test('scanOpportunitiesFromData applies replay source and mempool gas pressure', () => {
