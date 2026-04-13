@@ -50,6 +50,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Opportunity + operations API:
   - `GET /opportunities`
   - `GET /metrics` (PnL ledger aggregates + recent execution window)
+  - `GET /alerts` (runtime health alerts: failure streak, low execution rate, gas pressure, missing wallet session)
   - `GET /dashboard` (lightweight HTML dashboard)
   - `GET /config`
   - `GET /session`
@@ -109,10 +110,18 @@ Default runtime risk config in `src/engine.js`:
 - `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
 - `preferAtomicExecution` (default `true`) enforces bundle-first fail-closed execution planning
 - `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan
+- `alertWindow` (default `20`) rolling sample size for runtime alert checks
+- `alertMaxConsecutiveFailures` (default `5`) critical alert threshold
+- `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5
+- `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
+- `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
 
 ## Data output
 Execution log file:
 - `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `netAfterGasUsd`, `mode`, and wallet context)
+
+Alert log file:
+- `data/alerts.jsonl` (appends active alert snapshots; fail-closed operational visibility)
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)

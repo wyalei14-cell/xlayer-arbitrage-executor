@@ -10,13 +10,15 @@ const {
   setMode,
   walletLogin,
   walletLogout,
-  getPnlMetrics
+  getPnlMetrics,
+  getAlertStatus
 } = require('./engine');
 
 const cmd = process.argv[2] || 'scan';
 
 function renderDashboard(metrics) {
   const last = metrics.lastRecord;
+  const alertStatus = getAlertStatus();
   return `<!doctype html>
 <html><head><meta charset="utf-8" />
 <title>XLayer Arbitrage Dashboard</title>
@@ -43,9 +45,10 @@ code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
   <strong>Autopilot:</strong> ${state.autopilot} | <strong>Mode:</strong> ${state.session.mode}<br/>
   <strong>Wallet:</strong> ${state.session.wallet.address || 'not logged in'}<br/>
   <strong>Signals:</strong> source=${state.runtimeSignals.quoteSource}, wsQuotes=${state.runtimeSignals.wsQuoteCount}, pendingMempool=${state.runtimeSignals.pendingMempoolTxs}, gasMult=${state.runtimeSignals.gasPressureMultiplier}<br/>
+  <strong>Alerts:</strong> ${alertStatus.ok ? 'healthy' : `${alertStatus.alerts.length} active`}<br/>
   <strong>Last Record:</strong> ${last ? `${last.ts} / ${last.reason} / pnl=$${last.realizedProfitUsd}` : 'none'}
 </div>
-<p>JSON endpoints: <code>/metrics</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code></p>
+<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code></p>
 </body></html>`;
 }
 
@@ -170,6 +173,9 @@ if (cmd === 'api') {
     }
     if (req.url === '/metrics') {
       return res.end(JSON.stringify({ metrics: getPnlMetrics() }));
+    }
+    if (req.url === '/alerts') {
+      return res.end(JSON.stringify({ alerts: getAlertStatus() }));
     }
     if (req.url === '/dashboard') {
       res.setHeader('content-type', 'text/html; charset=utf-8');

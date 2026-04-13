@@ -23,6 +23,8 @@ const {
   walletLogout,
   readExecutionLedger,
   getPnlMetrics,
+  evaluateRuntimeAlerts,
+  getAlertStatus,
   resetStreamingSignalCache
 } = require('../src/engine');
 
@@ -370,4 +372,48 @@ test('runReplayBacktest returns aggregate report from snapshots', () => {
   assert.equal(report.sampleSize, 1);
   assert.equal(report.executedCount, 1);
   assert.ok(report.totalRealizedPnlUsd > 0);
+});
+
+test('evaluateRuntimeAlerts triggers consecutive failure and low execution warnings', () => {
+  const rows = [
+    { success: true, realizedProfitUsd: 1, gasCostUsd: 0.1, netProfitUsd: 2 },
+    { success: false, realizedProfitUsd: -1, gasCostUsd: 0.4, netProfitUsd: 0.2 },
+    { success: false, realizedProfitUsd: -1, gasCostUsd: 0.4, netProfitUsd: 0.2 },
+    { success: false, realizedProfitUsd: -1, gasCostUsd: 0.4, netProfitUsd: 0.2 },
+    { success: false, realizedProfitUsd: -1, gasCostUsd: 0.4, netProfitUsd: 0.2 },
+    { success: false, realizedProfitUsd: -1, gasCostUsd: 0.4, netProfitUsd: 0.2 }
+  ];
+  const metrics = {
+    sampleSize: rows.length,
+    executionRate: 0.16,
+    totalRealizedPnlUsd: -4
+  };
+  const runtimeState = {
+    ...state,
+    autopilot: false,
+    config: {
+      ...state.config,
+      alertWindow: 20,
+      alertMaxConsecutiveFailures: 5,
+      alertMinExecutionRate: 0.2,
+      alertMinRecentPnlUsd: -3,
+      alertMaxGasCostShare: 0.5
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({ rows, metrics, runtimeState });
+  assert.equal(out.ok, false);
+  assert.ok(out.alerts.some((a) => a.code === 'consecutive-failures'));
+  assert.ok(out.alerts.some((a) => a.code === 'low-execution-rate'));
+});
+
+test('getAlertStatus raises wallet-session-missing in live autopilot mode', () => {
+  state.autopilot = true;
+  setMode('live');
+  walletLogout();
+
+  const out = getAlertStatus();
+  assert.equal(out.ok, false);
+  assert.ok(out.alerts.some((a) => a.code === 'wallet-session-missing'));
 });

@@ -39,7 +39,12 @@ const state = {
     mempoolGasMultiplierPerPendingTx: 0.015,
     maxMempoolGasMultiplier: 2,
     routeComplexityPenaltyUsdPerHop: 0.2,
-    routeDexDiversityBonusUsd: 0.05
+    routeDexDiversityBonusUsd: 0.05,
+    alertWindow: 20,
+    alertMaxConsecutiveFailures: 5,
+    alertMinExecutionRate: 0.2,
+    alertMinRecentPnlUsd: -5,
+    alertMaxGasCostShare: 0.6
   },
   session: {
     mode: 'paper',
@@ -803,6 +808,96 @@ function getPnlMetrics({ limit = 200 } = {}) {
   };
 }
 
+function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
+  const alerts = [];
+  const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
+
+  let consecutiveFailures = 0;
+  for (let i = recentRows.length - 1; i >= 0; i--) {
+    if (recentRows[i].success) break;
+    consecutiveFailures += 1;
+  }
+
+  if (consecutiveFailures >= runtimeState.config.alertMaxConsecutiveFailures) {
+    alerts.push({
+      level: 'critical',
+      code: 'consecutive-failures',
+      message: `Consecutive failed runs reached ${consecutiveFailures}`,
+      value: consecutiveFailures,
+      threshold: runtimeState.config.alertMaxConsecutiveFailures
+    });
+  }
+
+  if (metrics.executionRate < runtimeState.config.alertMinExecutionRate && metrics.sampleSize >= 5) {
+    alerts.push({
+      level: 'warning',
+      code: 'low-execution-rate',
+      message: `Execution rate dropped to ${metrics.executionRate}`,
+      value: metrics.executionRate,
+      threshold: runtimeState.config.alertMinExecutionRate
+    });
+  }
+
+  const recentPnlUsd = +recentRows.reduce((sum, r) => sum + (r.realizedProfitUsd || 0), 0).toFixed(4);
+  if (recentPnlUsd <= runtimeState.config.alertMinRecentPnlUsd && recentRows.length >= 5) {
+    alerts.push({
+      level: 'warning',
+      code: 'negative-recent-pnl',
+      message: `Recent PnL fell to ${recentPnlUsd}`,
+      value: recentPnlUsd,
+      threshold: runtimeState.config.alertMinRecentPnlUsd
+    });
+  }
+
+  const gasCost = recentRows.reduce((sum, r) => sum + (r.gasCostUsd || 0), 0);
+  const grossNet = recentRows.reduce((sum, r) => sum + Math.max(0, r.netProfitUsd || 0), 0);
+  const gasShare = grossNet > 0 ? +(gasCost / grossNet).toFixed(4) : 0;
+  if (gasShare >= runtimeState.config.alertMaxGasCostShare && recentRows.length >= 5) {
+    alerts.push({
+      level: 'warning',
+      code: 'gas-cost-pressure',
+      message: `Gas cost share reached ${gasShare}`,
+      value: gasShare,
+      threshold: runtimeState.config.alertMaxGasCostShare
+    });
+  }
+
+  if (runtimeState.autopilot && runtimeState.session.mode === 'live' && !runtimeState.session.wallet.loggedIn) {
+    alerts.push({
+      level: 'critical',
+      code: 'wallet-session-missing',
+      message: 'Live autopilot enabled but wallet is not logged in'
+    });
+  }
+
+  return {
+    ts: new Date().toISOString(),
+    ok: alerts.length === 0,
+    alerts,
+    stats: {
+      sampleSize: metrics.sampleSize,
+      executionRate: metrics.executionRate,
+      totalRealizedPnlUsd: metrics.totalRealizedPnlUsd,
+      recentPnlUsd,
+      consecutiveFailures,
+      gasShare
+    }
+  };
+}
+
+function appendAlertSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.alerts) || snapshot.alerts.length === 0) return;
+  const file = path.join(process.cwd(), 'data', 'alerts.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(snapshot) + '\n');
+}
+
+function getAlertStatus() {
+  const rows = readExecutionLedger(state.config.alertWindow);
+  const metrics = getPnlMetrics({ limit: state.config.alertWindow });
+  return evaluateRuntimeAlerts({ rows, metrics, runtimeState: state });
+}
+
 function optimizeFromHistory() {
   const file = path.join(process.cwd(), 'data', 'executions.jsonl');
   if (!fs.existsSync(file)) return state.config;
@@ -899,7 +994,9 @@ function runOnce() {
       reason: `scan-error:${err.message}`
     };
     appendRecord(failRecord);
-    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals };
+    const alerts = getAlertStatus();
+    appendAlertSnapshot(alerts);
+    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   }
 
   let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
@@ -935,8 +1032,10 @@ function runOnce() {
   };
   appendRecord(record);
   optimizeFromHistory();
+  const alerts = getAlertStatus();
+  appendAlertSnapshot(alerts);
 
-  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals };
+  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
 }
 
 loadRuntimeState();
@@ -966,6 +1065,8 @@ module.exports = {
   walletLogout,
   readExecutionLedger,
   getPnlMetrics,
+  evaluateRuntimeAlerts,
+  getAlertStatus,
   startStreamingSignalListeners,
   resetStreamingSignalCache
 };
