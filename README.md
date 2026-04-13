@@ -67,6 +67,9 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - two-pool detection
   - triangular detection
   - replay/backtest runner over historical snapshots
+- Paper-trading soak mode:
+  - repeated paper-mode execution loop with preflight checks still enabled
+  - optional stop-on-critical alert behavior for safe unattended shakeout
 
 ## Run
 ```bash
@@ -74,6 +77,7 @@ npm run scan
 npm run autopilot
 npm run api
 npm run backtest
+npm run soak -- 120 500
 npm test
 
 # wallet/session controls
@@ -94,6 +98,9 @@ node src/cli.js wallet-logout
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)
+- `SOAK_ITERATIONS=120` (default iterations for `npm run soak`)
+- `SOAK_INTERVAL_MS=1000` (delay between soak runs)
+- `SOAK_STOP_ON_CRITICAL=true|false` (stop soak early on critical alerts)
 - `PORT=8787` (api server)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)

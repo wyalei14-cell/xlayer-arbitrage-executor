@@ -5,6 +5,7 @@ const {
   state,
   runOnce,
   runReplayBacktest,
+  runPaperSoak,
   scanOpportunities,
   setAutopilot,
   setMode,
@@ -139,6 +140,23 @@ if (cmd === 'backtest') {
   fs.writeFileSync(output, JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ok: true, input, output, report }, null, 2));
   process.exit(0);
+}
+
+if (cmd === 'soak') {
+  const iterations = Number(process.argv[3] || process.env.SOAK_ITERATIONS || 60);
+  const intervalMs = Number(process.argv[4] || process.env.SOAK_INTERVAL_MS || 1000);
+  const stopOnCritical = String(process.env.SOAK_STOP_ON_CRITICAL || 'true') === 'true';
+
+  runPaperSoak({ iterations, intervalMs, stopOnCritical })
+    .then((report) => {
+      console.log(JSON.stringify({ ok: true, report }, null, 2));
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(`soak failed: ${err.message}`);
+      process.exit(1);
+    });
+  return;
 }
 
 if (cmd === 'api') {

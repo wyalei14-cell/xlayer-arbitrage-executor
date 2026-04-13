@@ -968,6 +968,60 @@ function runReplayBacktest(snapshots = []) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+}
+
+async function runPaperSoak({ iterations = 20, intervalMs = 1000, stopOnCritical = true } = {}) {
+  const targetIterations = Math.max(1, Number(iterations) || 1);
+  const pauseMs = Math.max(0, Number(intervalMs) || 0);
+  const previous = {
+    autopilot: state.autopilot,
+    mode: state.session.mode
+  };
+
+  setAutopilot(true);
+  setMode('paper');
+
+  const runs = [];
+  for (let i = 0; i < targetIterations; i++) {
+    const out = runOnce();
+    runs.push({
+      index: i + 1,
+      ts: out.record.ts,
+      success: out.record.success,
+      reason: out.record.reason,
+      routeType: out.record.routeType,
+      netProfitUsd: out.record.netProfitUsd,
+      realizedProfitUsd: out.record.realizedProfitUsd,
+      gasCostUsd: out.record.gasCostUsd,
+      alerts: out.alerts
+    });
+
+    const hasCritical = Array.isArray(out.alerts?.alerts) && out.alerts.alerts.some((a) => a.level === 'critical');
+    if (stopOnCritical && hasCritical) break;
+    if (i < targetIterations - 1 && pauseMs > 0) await sleep(pauseMs);
+  }
+
+  setAutopilot(previous.autopilot);
+  setMode(previous.mode);
+
+  const executedCount = runs.filter((r) => r.success).length;
+  const totalRealizedPnlUsd = +runs.reduce((sum, r) => sum + (r.realizedProfitUsd || 0), 0).toFixed(4);
+  const totalGasCostUsd = +runs.reduce((sum, r) => sum + (r.gasCostUsd || 0), 0).toFixed(4);
+
+  return {
+    iterationsRequested: targetIterations,
+    iterationsCompleted: runs.length,
+    stoppedEarly: runs.length < targetIterations,
+    executionRate: +(executedCount / Math.max(runs.length, 1)).toFixed(4),
+    executedCount,
+    totalRealizedPnlUsd,
+    totalGasCostUsd,
+    runs
+  };
+}
+
 function runOnce() {
   let opportunities = [];
   let selected = null;
@@ -1044,6 +1098,7 @@ module.exports = {
   state,
   runOnce,
   runReplayBacktest,
+  runPaperSoak,
   scanOpportunities,
   scanOpportunitiesFromData,
   optimizeFromHistory,

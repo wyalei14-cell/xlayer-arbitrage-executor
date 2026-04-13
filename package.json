@@ -8,6 +8,7 @@
     "autopilot": "node src/cli.js autopilot",
     "api": "node src/cli.js api",
     "backtest": "node src/cli.js backtest",
+    "soak": "node src/cli.js soak",
     "test": "node --test"
   }
 }

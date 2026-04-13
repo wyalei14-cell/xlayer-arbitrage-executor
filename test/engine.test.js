@@ -8,6 +8,7 @@ const {
   scanOpportunities,
   scanOpportunitiesFromData,
   runReplayBacktest,
+  runPaperSoak,
   detectTwoPool,
   detectTriangular,
   riskCheck,
@@ -416,4 +417,34 @@ test('getAlertStatus raises wallet-session-missing in live autopilot mode', () =
   const out = getAlertStatus();
   assert.equal(out.ok, false);
   assert.ok(out.alerts.some((a) => a.code === 'wallet-session-missing'));
+});
+
+test('runPaperSoak executes requested iterations and restores prior session state', async () => {
+  state.autopilot = false;
+  setMode('live');
+
+  const report = await runPaperSoak({ iterations: 3, intervalMs: 0, stopOnCritical: false });
+  assert.equal(report.iterationsCompleted, 3);
+  assert.equal(report.stoppedEarly, false);
+  assert.equal(state.autopilot, false);
+  assert.equal(state.session.mode, 'live');
+});
+
+test('runPaperSoak stops early on critical alert when enabled', async () => {
+  const prevSecurity = process.env.SECURITY_FORCE_BLOCK;
+  process.env.SECURITY_FORCE_BLOCK = 'true';
+
+  const prevWindow = state.config.alertWindow;
+  const prevFailures = state.config.alertMaxConsecutiveFailures;
+  state.config.alertWindow = 5;
+  state.config.alertMaxConsecutiveFailures = 1;
+
+  const report = await runPaperSoak({ iterations: 5, intervalMs: 0, stopOnCritical: true });
+  assert.equal(report.stoppedEarly, true);
+  assert.ok(report.iterationsCompleted < 5);
+
+  state.config.alertWindow = prevWindow;
+  state.config.alertMaxConsecutiveFailures = prevFailures;
+  if (prevSecurity === undefined) delete process.env.SECURITY_FORCE_BLOCK;
+  else process.env.SECURITY_FORCE_BLOCK = prevSecurity;
 });
