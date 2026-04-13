@@ -22,7 +22,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
-  - best-path builder ranks single-hop vs multi-hop routes with complexity penalty + DEX-diversity bonus (router-ready scoring)
+  - best-path builder ranks single-hop vs multi-hop routes with complexity penalty + DEX-diversity bonus
+  - router/aggregator plan builder converts selected path into hop-level execution plan (`entryToken`, `exitToken`, `hops`, `expectedReturnUsd`, `minReturnUsd`)
 - Profit model:
   - gross profit
   - fees
@@ -95,6 +96,7 @@ node src/cli.js wallet-logout
 - `DEX_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `SECURITY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
 - `GATEWAY_ADAPTER=mock|live` (default `mock`; `live` currently enforces interface requirements and fail-closes)
+- `ROUTER_PROVIDER=onchainos-router` (optional router/aggregator provider label in preflight route plan)
 - `SECURITY_FORCE_BLOCK=true` (test switch to force security block in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)

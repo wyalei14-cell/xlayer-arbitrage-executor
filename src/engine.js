@@ -176,18 +176,19 @@ function walletAdapter() {
   throw new Error(`wallet-check-failed: unsupported WALLET_ADAPTER=${mode}`);
 }
 
-function dexAdapter(opp, wallet) {
+function dexAdapter(opp, wallet, routerPlan) {
   const mode = getAdapterMode('DEX_ADAPTER');
   const routeId = (opp.path || []).join(' | ');
   if (mode === 'mock') {
     return {
       provider: 'dex-mock',
       routeId,
+      routerPlan,
       tx: {
         chainId: state.config.chainId,
         from: wallet.address,
         to: '0x2222222222222222222222222222222222222222',
-        data: '0xfeedbeef',
+        data: `0xfeedbeef${String(routerPlan?.hopCount || 0).padStart(2, '0')}`,
         value: '0x0'
       }
     };
@@ -257,7 +258,11 @@ function buildAtomicExecutionPlan(opp, wallet, dex, gateway) {
 function buildOnchainExecutionPlan(opp) {
   try {
     const wallet = walletAdapter();
-    const dex = dexAdapter(opp, wallet);
+    const routerPlan = buildRouterPlan(opp);
+    if (!routerPlan.ok) {
+      return { ok: false, reason: `router-build-failed:${routerPlan.reason}`, wallet, routerPlan };
+    }
+    const dex = dexAdapter(opp, wallet, routerPlan);
     const security = securityAdapter(opp, dex.tx);
     if (!security.safe) {
       return { ok: false, reason: `security-blocked:${security.reason}`, wallet, dex, security };
@@ -368,6 +373,45 @@ function pairFromPathLeg(pathLeg) {
   const route = String(pathLeg || '').split('@')[0];
   const [a, b] = route.split('->');
   return [a, b].sort().join('/');
+}
+
+function parsePathLeg(pathLeg) {
+  const [route, dex = 'unknown'] = String(pathLeg || '').split('@');
+  const [tokenIn, tokenOut] = String(route || '').split('->');
+  return {
+    tokenIn: tokenIn || null,
+    tokenOut: tokenOut || null,
+    dex: dex || 'unknown'
+  };
+}
+
+function buildRouterPlan(opp) {
+  const hops = (opp?.path || []).map((leg, idx) => ({
+    index: idx,
+    ...parsePathLeg(leg)
+  }));
+
+  if (!hops.length || hops.some((h) => !h.tokenIn || !h.tokenOut)) {
+    return { ok: false, reason: 'invalid-route-legs', hops: [] };
+  }
+
+  const entryToken = hops[0].tokenIn;
+  const exitToken = hops[hops.length - 1].tokenOut;
+  const expectedReturnUsd = +((opp?.tradeAmountUsd || 0) + (opp?.grossProfitUsd || 0) - (opp?.feeUsd || 0) - (opp?.slippageUsd || 0)).toFixed(6);
+  const minReturnUsd = +(expectedReturnUsd * (1 - state.config.maxSlippagePct / 100)).toFixed(6);
+
+  return {
+    ok: true,
+    reason: 'ok',
+    provider: process.env.ROUTER_PROVIDER || 'onchainos-router',
+    routeType: hops.length === 1 ? 'single-hop' : 'multi-hop',
+    entryToken,
+    exitToken,
+    hopCount: hops.length,
+    hops,
+    expectedReturnUsd,
+    minReturnUsd
+  };
 }
 
 function applyMempoolPressure(opportunities, pendingTxs) {
@@ -1154,6 +1198,7 @@ module.exports = {
   buildBestPathPlan,
   executeOpportunity,
   buildAtomicExecutionPlan,
+  buildRouterPlan,
   buildOnchainExecutionPlan,
   liveMarket,
   loadRuntimeState,

@@ -16,6 +16,7 @@ const {
   buildBestPathPlan,
   executeOpportunity,
   buildAtomicExecutionPlan,
+  buildRouterPlan,
   buildOnchainExecutionPlan,
   persistRuntimeState,
   loadRuntimeState,
@@ -144,6 +145,23 @@ test('buildBestPathPlan picks highest routing score among risk-passing opportuni
   assert.equal(plan.ranked.length, 2);
 });
 
+test('buildRouterPlan constructs multi-hop aggregator route with min return', () => {
+  const out = buildRouterPlan({
+    path: ['USDC->ETH@Uni', 'ETH->OKB@Sync', 'OKB->USDC@Uni'],
+    tradeAmountUsd: 120,
+    grossProfitUsd: 6,
+    feeUsd: 1,
+    slippageUsd: 0.5
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.routeType, 'multi-hop');
+  assert.equal(out.hopCount, 3);
+  assert.equal(out.entryToken, 'USDC');
+  assert.equal(out.exitToken, 'USDC');
+  assert.ok(out.minReturnUsd < out.expectedReturnUsd);
+});
+
 test('buildAtomicExecutionPlan flags flash-loan-ready funding for larger trade amounts', () => {
   const out = buildAtomicExecutionPlan(
     { path: ['USDC->OKB@A', 'OKB->USDC@B'], tradeAmountUsd: 500 },
@@ -172,6 +190,12 @@ test('buildOnchainExecutionPlan fail-closes when live wallet adapter is missing 
   else process.env.WALLET_ADAPTER = prev;
   if (prevAddress === undefined) delete process.env.WALLET_ADDRESS;
   else process.env.WALLET_ADDRESS = prevAddress;
+});
+
+test('buildOnchainExecutionPlan fail-closes when router plan cannot be built', () => {
+  const out = buildOnchainExecutionPlan({ path: ['BROKEN_PATH_LEG'] });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /router-build-failed/);
 });
 
 test('buildOnchainExecutionPlan fail-closes when atomic execution is required but unavailable', () => {
