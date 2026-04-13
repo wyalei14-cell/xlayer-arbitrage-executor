@@ -1,0 +1,1 @@
+{"ts":"2026-04-13T17:17:05.950Z","routeType":"triangular","path":["USDC->ETH@Pangea","ETH->OKB@UniswapV3","OKB->USDC@SyncSwap"],"grossProfitUsd":2.16,"feeUsd":0.48,"slippageUsd":0.264,"netProfitUsd":1.416,"success":false,"txHash":null,"realizedProfitUsd":0,"reason":"profit-too-low"}

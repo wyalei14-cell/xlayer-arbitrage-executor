@@ -1,0 +1,11 @@
+{
+  "name": "xlayer-arbitrage-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "scan": "node src/cli.js scan",
+    "autopilot": "node src/cli.js autopilot",
+    "api": "node src/cli.js api"
+  }
+}
