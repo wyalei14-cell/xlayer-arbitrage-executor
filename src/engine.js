@@ -9,44 +9,166 @@ const state = {
     maxSlippagePct: 0.8,
     denyTokens: ['SCAM', 'RUG'],
     scanIntervalMs: 15000,
-    tradeAmountUsd: 120
+    tradeAmountUsd: 120,
+    maxQuoteAgeMs: 45_000,
+    maxExecutionRetries: 2
   }
 };
 
+function now() {
+  return Date.now();
+}
+
 function mockMarket() {
+  const ts = now();
   return [
-    { dex: 'UniswapV3', pair: 'USDC/OKB', price: 1.002, liq: 200000 },
-    { dex: 'SyncSwap', pair: 'USDC/OKB', price: 0.993, liq: 140000 },
-    { dex: 'Pangea', pair: 'USDC/ETH', price: 0.00039, liq: 180000 },
-    { dex: 'UniswapV3', pair: 'ETH/OKB', price: 2580, liq: 220000 }
+    { dex: 'UniswapV3', base: 'USDC', quote: 'OKB', price: 1.002, feePct: 0.3, slippagePct: 0.16, liqUsd: 200000, ts },
+    { dex: 'SyncSwap', base: 'USDC', quote: 'OKB', price: 0.993, feePct: 0.3, slippagePct: 0.18, liqUsd: 140000, ts },
+    { dex: 'Pangea', base: 'USDC', quote: 'ETH', price: 0.00039, feePct: 0.3, slippagePct: 0.2, liqUsd: 180000, ts },
+    { dex: 'UniswapV3', base: 'ETH', quote: 'OKB', price: 2580, feePct: 0.3, slippagePct: 0.18, liqUsd: 220000, ts },
+    { dex: 'SyncSwap', base: 'OKB', quote: 'USDC', price: 0.996, feePct: 0.3, slippagePct: 0.2, liqUsd: 150000, ts }
   ];
 }
 
+async function liveMarket() {
+  const url = process.env.QUOTE_ADAPTER_URL;
+  if (!url) throw new Error('QUOTE_ADAPTER_URL is required when QUOTE_ADAPTER=live');
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`quote adapter error: ${res.status}`);
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error('quote adapter must return array');
+  return data;
+}
+
+function loadMarketSync() {
+  const mode = String(process.env.QUOTE_ADAPTER || 'mock').toLowerCase();
+  if (mode !== 'mock') {
+    throw new Error('sync scan supports only QUOTE_ADAPTER=mock; use async path for live');
+  }
+  return mockMarket();
+}
+
+function validateQuoteRow(q) {
+  const required = ['dex', 'base', 'quote', 'price', 'feePct', 'slippagePct', 'liqUsd', 'ts'];
+  for (const k of required) {
+    if (q[k] === undefined || q[k] === null) throw new Error(`missing quote field: ${k}`);
+  }
+  if (typeof q.dex !== 'string' || typeof q.base !== 'string' || typeof q.quote !== 'string') throw new Error('invalid quote tokens');
+  if (!(q.price > 0) || !(q.liqUsd > 0)) throw new Error('invalid price/liquidity');
+  if (q.ts < now() - state.config.maxQuoteAgeMs) throw new Error('stale quote');
+}
+
+function validateMarket(quotes) {
+  if (!Array.isArray(quotes) || quotes.length === 0) throw new Error('empty market snapshot');
+  quotes.forEach(validateQuoteRow);
+  return quotes;
+}
+
+function estimateLegCost(amountUsd, feePct, slippagePct) {
+  return amountUsd * ((feePct + slippagePct) / 100);
+}
+
+function detectTwoPool(quotes) {
+  const buckets = new Map();
+  for (const q of quotes) {
+    const pair = [q.base, q.quote].sort().join('/');
+    if (!buckets.has(pair)) buckets.set(pair, []);
+    buckets.get(pair).push(q);
+  }
+
+  const out = [];
+  for (const [, rows] of buckets.entries()) {
+    if (rows.length < 2) continue;
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        const a = rows[i];
+        const b = rows[j];
+        const spread = Math.abs(a.price - b.price) / Math.min(a.price, b.price);
+        const gross = state.config.tradeAmountUsd * spread;
+        const fee = estimateLegCost(state.config.tradeAmountUsd, a.feePct + b.feePct, 0);
+        const slip = estimateLegCost(state.config.tradeAmountUsd, 0, a.slippagePct + b.slippagePct);
+        const net = +(gross - fee - slip).toFixed(4);
+
+        out.push({
+          type: 'two-pool',
+          path: [`${a.base}->${a.quote}@${a.dex}`, `${b.quote}->${b.base}@${b.dex}`],
+          legs: [a, b],
+          grossProfitUsd: +gross.toFixed(4),
+          feeUsd: +fee.toFixed(4),
+          slippageUsd: +slip.toFixed(4),
+          netProfitUsd: net
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function edgeOut(q, tokenIn, amountIn) {
+  if (q.base === tokenIn) {
+    const gross = amountIn * q.price;
+    return gross * (1 - (q.feePct + q.slippagePct) / 100);
+  }
+  if (q.quote === tokenIn) {
+    const gross = amountIn / q.price;
+    return gross * (1 - (q.feePct + q.slippagePct) / 100);
+  }
+  return null;
+}
+
+function detectTriangular(quotes) {
+  const tokens = Array.from(new Set(quotes.flatMap((q) => [q.base, q.quote])));
+  const out = [];
+  const startToken = 'USDC';
+  const startAmount = state.config.tradeAmountUsd;
+
+  for (const t1 of tokens) {
+    if (t1 === startToken) continue;
+    for (const t2 of tokens) {
+      if (t2 === startToken || t2 === t1) continue;
+      const leg1 = quotes.filter((q) => [q.base, q.quote].includes(startToken) && [q.base, q.quote].includes(t1));
+      const leg2 = quotes.filter((q) => [q.base, q.quote].includes(t1) && [q.base, q.quote].includes(t2));
+      const leg3 = quotes.filter((q) => [q.base, q.quote].includes(t2) && [q.base, q.quote].includes(startToken));
+      for (const a of leg1) for (const b of leg2) for (const c of leg3) {
+        const out1 = edgeOut(a, startToken, startAmount);
+        const out2 = out1 ? edgeOut(b, t1, out1) : null;
+        const out3 = out2 ? edgeOut(c, t2, out2) : null;
+        if (!out3) continue;
+
+        const gross = Math.max(0, out3 - startAmount);
+        const fee = estimateLegCost(startAmount, a.feePct + b.feePct + c.feePct, 0);
+        const slip = estimateLegCost(startAmount, 0, a.slippagePct + b.slippagePct + c.slippagePct);
+        const net = +(gross - fee - slip).toFixed(4);
+        out.push({
+          type: 'triangular',
+          path: [`${startToken}->${t1}@${a.dex}`, `${t1}->${t2}@${b.dex}`, `${t2}->${startToken}@${c.dex}`],
+          legs: [a, b, c],
+          grossProfitUsd: +gross.toFixed(4),
+          feeUsd: +fee.toFixed(4),
+          slippageUsd: +slip.toFixed(4),
+          netProfitUsd: net
+        });
+      }
+    }
+  }
+
+  const seen = new Set();
+  return out.filter((x) => {
+    const k = x.path.join('|');
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 function scanOpportunities() {
-  const m = mockMarket();
-  const twoPoolSpread = Math.abs(m[0].price - m[1].price) / Math.min(m[0].price, m[1].price);
-  const twoPool = {
-    type: 'two-pool',
-    path: ['USDC->OKB@SyncSwap', 'OKB->USDC@UniswapV3'],
-    grossProfitUsd: +(state.config.tradeAmountUsd * twoPoolSpread).toFixed(4),
-    feeUsd: +(state.config.tradeAmountUsd * 0.003).toFixed(4),
-    slippageUsd: +(state.config.tradeAmountUsd * 0.0018).toFixed(4)
-  };
-  twoPool.netProfitUsd = +(twoPool.grossProfitUsd - twoPool.feeUsd - twoPool.slippageUsd).toFixed(4);
-
-  const tri = {
-    type: 'triangular',
-    path: ['USDC->ETH@Pangea', 'ETH->OKB@UniswapV3', 'OKB->USDC@SyncSwap'],
-    grossProfitUsd: +(state.config.tradeAmountUsd * 0.018).toFixed(4),
-    feeUsd: +(state.config.tradeAmountUsd * 0.004).toFixed(4),
-    slippageUsd: +(state.config.tradeAmountUsd * 0.0022).toFixed(4)
-  };
-  tri.netProfitUsd = +(tri.grossProfitUsd - tri.feeUsd - tri.slippageUsd).toFixed(4);
-
-  return [twoPool, tri].sort((a, b) => b.netProfitUsd - a.netProfitUsd);
+  const quotes = validateMarket(loadMarketSync());
+  const opportunities = [...detectTwoPool(quotes), ...detectTriangular(quotes)];
+  return opportunities.sort((a, b) => b.netProfitUsd - a.netProfitUsd);
 }
 
 function riskCheck(opp) {
+  if (!opp) return { pass: false, reason: 'no-opportunity' };
   if (state.config.denyTokens.some((t) => opp.path.join('|').includes(t))) return { pass: false, reason: 'deny-token' };
   if (state.config.tradeAmountUsd > state.config.maxTradeAmountUsd) return { pass: false, reason: 'trade-amount-too-high' };
   const impliedSlippagePct = 100 * (opp.slippageUsd / state.config.tradeAmountUsd);
@@ -56,14 +178,18 @@ function riskCheck(opp) {
 }
 
 function executeOpportunity(opp) {
-  const rechecked = { ...opp, recheckTs: Date.now() };
-  const txHash = '0x' + Buffer.from(String(Date.now())).toString('hex').slice(0, 64).padEnd(64, '0');
-  return {
-    success: true,
-    txHash,
-    realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
-    reason: 'executed'
-  };
+  const rechecked = { ...opp, recheckTs: now() };
+  for (let attempt = 0; attempt <= state.config.maxExecutionRetries; attempt++) {
+    if (rechecked.netProfitUsd <= 0) return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed' };
+    const txHash = '0x' + Buffer.from(`${Date.now()}-${attempt}`).toString('hex').slice(0, 64).padEnd(64, '0');
+    return {
+      success: true,
+      txHash,
+      realizedProfitUsd: +(rechecked.netProfitUsd * 0.92).toFixed(4),
+      reason: `executed-attempt-${attempt + 1}`
+    };
+  }
+  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted' };
 }
 
 function appendRecord(obj) {
@@ -87,29 +213,53 @@ function optimizeFromHistory() {
 }
 
 function runOnce() {
-  const opportunities = scanOpportunities();
-  const best = opportunities[0];
-  const risk = riskCheck(best);
-  let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: risk.reason };
+  let opportunities = [];
+  let selected = null;
 
-  if (risk.pass && state.autopilot) {
-    result = executeOpportunity(best);
+  try {
+    opportunities = scanOpportunities();
+    const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
+    selected = assessed.find((x) => x.risk.pass) || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' } };
+  } catch (err) {
+    const failRecord = {
+      ts: new Date().toISOString(),
+      routeType: 'none',
+      path: [],
+      quoteSnapshot: null,
+      grossProfitUsd: 0,
+      feeUsd: 0,
+      slippageUsd: 0,
+      netProfitUsd: 0,
+      txHash: null,
+      success: false,
+      realizedProfitUsd: 0,
+      reason: `scan-error:${err.message}`
+    };
+    appendRecord(failRecord);
+    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot };
+  }
+
+  let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
+  if (selected.risk.pass && state.autopilot) {
+    result = executeOpportunity(selected.opp);
   }
 
   const record = {
     ts: new Date().toISOString(),
-    routeType: best.type,
-    path: best.path,
-    grossProfitUsd: best.grossProfitUsd,
-    feeUsd: best.feeUsd,
-    slippageUsd: best.slippageUsd,
-    netProfitUsd: best.netProfitUsd,
+    routeType: selected.opp?.type || 'none',
+    path: selected.opp?.path || [],
+    quoteSnapshot: selected.opp?.legs || null,
+    grossProfitUsd: selected.opp?.grossProfitUsd || 0,
+    feeUsd: selected.opp?.feeUsd || 0,
+    slippageUsd: selected.opp?.slippageUsd || 0,
+    netProfitUsd: selected.opp?.netProfitUsd || 0,
+    consideredCount: opportunities.length,
     ...result
   };
   appendRecord(record);
   optimizeFromHistory();
 
-  return { config: state.config, opportunities, record, autopilot: state.autopilot };
+  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot };
 }
 
-module.exports = { state, runOnce, scanOpportunities, optimizeFromHistory };
+module.exports = { state, runOnce, scanOpportunities, optimizeFromHistory, validateMarket, detectTwoPool, detectTriangular, liveMarket };
