@@ -498,6 +498,30 @@ test('getAlertStatus raises wallet-session-missing in live autopilot mode', () =
   assert.ok(out.alerts.some((a) => a.code === 'wallet-session-missing'));
 });
 
+test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener data is old', () => {
+  const staleIso = new Date(Date.now() - 60_000).toISOString();
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      enableStreamingSignals: true,
+      maxWsSignalAgeMs: 10_000,
+      maxMempoolSignalAgeMs: 10_000
+    },
+    runtimeSignals: {
+      ...state.runtimeSignals,
+      listenerMode: 'watch',
+      wsUpdatedAt: staleIso,
+      mempoolUpdatedAt: staleIso
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({ rows: [], metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 }, runtimeState });
+  assert.ok(out.alerts.some((a) => a.code === 'ws-signal-stale'));
+  assert.ok(out.alerts.some((a) => a.code === 'mempool-signal-stale'));
+});
+
 test('runPaperSoak executes requested iterations and restores prior session state', async () => {
   state.autopilot = false;
   setMode('live');

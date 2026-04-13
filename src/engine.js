@@ -935,6 +935,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
 function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   const alerts = [];
   const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
+  const runtimeSignals = runtimeState.runtimeSignals || {};
 
   let consecutiveFailures = 0;
   for (let i = recentRows.length - 1; i >= 0; i--) {
@@ -992,6 +993,34 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       code: 'wallet-session-missing',
       message: 'Live autopilot enabled but wallet is not logged in'
     });
+  }
+
+  if (runtimeState.config.enableStreamingSignals && runtimeSignals.listenerMode === 'watch') {
+    const nowTs = now();
+    const wsUpdatedAt = runtimeSignals.wsUpdatedAt ? Date.parse(runtimeSignals.wsUpdatedAt) : NaN;
+    const mempoolUpdatedAt = runtimeSignals.mempoolUpdatedAt ? Date.parse(runtimeSignals.mempoolUpdatedAt) : NaN;
+
+    const wsStaleAgeMs = Number(runtimeState.config.maxWsSignalAgeMs || 0) * 2;
+    if (Number.isFinite(wsUpdatedAt) && wsStaleAgeMs > 0 && nowTs - wsUpdatedAt > wsStaleAgeMs) {
+      alerts.push({
+        level: 'warning',
+        code: 'ws-signal-stale',
+        message: `Websocket quote overlay stale for ${nowTs - wsUpdatedAt}ms`,
+        value: nowTs - wsUpdatedAt,
+        threshold: wsStaleAgeMs
+      });
+    }
+
+    const mempoolStaleAgeMs = Number(runtimeState.config.maxMempoolSignalAgeMs || 0) * 2;
+    if (Number.isFinite(mempoolUpdatedAt) && mempoolStaleAgeMs > 0 && nowTs - mempoolUpdatedAt > mempoolStaleAgeMs) {
+      alerts.push({
+        level: 'warning',
+        code: 'mempool-signal-stale',
+        message: `Mempool overlay stale for ${nowTs - mempoolUpdatedAt}ms`,
+        value: nowTs - mempoolUpdatedAt,
+        threshold: mempoolStaleAgeMs
+      });
+    }
   }
 
   return {

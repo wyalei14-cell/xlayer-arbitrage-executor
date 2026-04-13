@@ -52,7 +52,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Opportunity + operations API:
   - `GET /opportunities`
   - `GET /metrics` (PnL ledger aggregates + recent execution window)
-  - `GET /alerts` (runtime health alerts: failure streak, low execution rate, gas pressure, missing wallet session)
+  - `GET /alerts` (runtime health alerts: failure streak, low execution rate, gas pressure, missing wallet session, stale websocket/mempool listener data)
   - `GET /dashboard` (lightweight HTML dashboard)
   - `GET /config`
   - `GET /session`
