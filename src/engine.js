@@ -40,6 +40,9 @@ const state = {
     maxMempoolGasMultiplier: 2,
     routeComplexityPenaltyUsdPerHop: 0.2,
     routeDexDiversityBonusUsd: 0.05,
+    routerFeeBps: 1,
+    bundleFeeUsd: 0.15,
+    flashLoanFeeBps: 5,
     alertWindow: 20,
     alertMaxConsecutiveFailures: 5,
     alertMinExecutionRate: 0.2,
@@ -469,9 +472,30 @@ function estimateGasCostUsd(gatewayEstimate) {
 
 function evaluateExecutionEconomics(opp, preflight) {
   const grossNetUsd = Number(opp?.netProfitUsd || 0);
+  const tradeAmountUsd = Number(opp?.tradeAmountUsd || 0);
   const gasCostUsd = estimateGasCostUsd(preflight?.gateway?.estimate);
+  const routerFeeUsd = +(tradeAmountUsd * (state.config.routerFeeBps / 10_000)).toFixed(6);
+
+  const atomic = preflight?.atomic || {};
+  const bundleFeeUsd = atomic.strategy === 'bundle' ? Number(state.config.bundleFeeUsd || 0) : 0;
+  const flashLoanFeeUsd = atomic.fundingMode === 'flash-loan-ready'
+    ? +(tradeAmountUsd * (state.config.flashLoanFeeBps / 10_000)).toFixed(6)
+    : 0;
+
+  const executionCostUsd = +(routerFeeUsd + bundleFeeUsd + flashLoanFeeUsd).toFixed(6);
   const netAfterGasUsd = +(grossNetUsd - gasCostUsd).toFixed(4);
-  return { grossNetUsd, gasCostUsd, netAfterGasUsd };
+  const netAfterAllCostsUsd = +(netAfterGasUsd - executionCostUsd).toFixed(4);
+
+  return {
+    grossNetUsd,
+    gasCostUsd,
+    routerFeeUsd,
+    bundleFeeUsd,
+    flashLoanFeeUsd,
+    executionCostUsd,
+    netAfterGasUsd,
+    netAfterAllCostsUsd
+  };
 }
 
 function liquidityBoundedAmount(legs) {
@@ -671,11 +695,13 @@ function executeOpportunity(opp) {
         reason: preflight.reason,
         gasCostUsd: economics.gasCostUsd,
         netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
         preflight
       };
     }
 
-    if (economics.netAfterGasUsd < state.config.minNetProfitUsd) {
+    if (economics.netAfterAllCostsUsd < state.config.minNetProfitUsd) {
       return {
         success: false,
         txHash: null,
@@ -683,6 +709,8 @@ function executeOpportunity(opp) {
         reason: 'profit-too-low-after-gas',
         gasCostUsd: economics.gasCostUsd,
         netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
         preflight
       };
     }
@@ -691,10 +719,12 @@ function executeOpportunity(opp) {
     return {
       success: true,
       txHash: paperHash,
-      realizedProfitUsd: +(economics.netAfterGasUsd * 0.92).toFixed(4),
+      realizedProfitUsd: +(economics.netAfterAllCostsUsd * 0.92).toFixed(4),
       reason: 'paper-filled',
       gasCostUsd: economics.gasCostUsd,
       netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }
@@ -709,11 +739,13 @@ function executeOpportunity(opp) {
       reason: preflight.reason,
       gasCostUsd: economics.gasCostUsd,
       netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }
 
-  if (economics.netAfterGasUsd < state.config.minNetProfitUsd) {
+  if (economics.netAfterAllCostsUsd < state.config.minNetProfitUsd) {
     return {
       success: false,
       txHash: null,
@@ -721,26 +753,34 @@ function executeOpportunity(opp) {
       reason: 'profit-too-low-after-gas',
       gasCostUsd: economics.gasCostUsd,
       netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }
 
   for (let attempt = 0; attempt <= state.config.maxExecutionRetries; attempt++) {
     if (rechecked.netProfitUsd <= 0) {
-      return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd, preflight };
+      return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'recheck-failed', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd, preflight };
     }
     const txHash = '0x' + Buffer.from(`${Date.now()}-${attempt}`).toString('hex').slice(0, 64).padEnd(64, '0');
     return {
       success: true,
       txHash,
-      realizedProfitUsd: +(economics.netAfterGasUsd * 0.92).toFixed(4),
+      realizedProfitUsd: +(economics.netAfterAllCostsUsd * 0.92).toFixed(4),
       reason: `executed-attempt-${attempt + 1}`,
       gasCostUsd: economics.gasCostUsd,
       netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }
-  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd, preflight };
+  return { success: false, txHash: null, realizedProfitUsd: 0, reason: 'execution-retries-exhausted', gasCostUsd: economics.gasCostUsd, netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd, preflight };
 }
 
 function appendRecord(obj) {
@@ -776,6 +816,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
   const executed = trades.filter((r) => r.success);
   const totalRealizedPnlUsd = +rows.reduce((s, r) => s + (r.realizedProfitUsd || 0), 0).toFixed(4);
   const totalGasCostUsd = +rows.reduce((s, r) => s + (r.gasCostUsd || 0), 0).toFixed(4);
+  const totalExecutionCostUsd = +rows.reduce((s, r) => s + (r.executionCostUsd || 0), 0).toFixed(4);
   const avgRealizedPnlUsd = +(totalRealizedPnlUsd / Math.max(executed.length, 1)).toFixed(4);
 
   const byMode = rows.reduce(
@@ -801,6 +842,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
     executionRate: +(executed.length / Math.max(trades.length, 1)).toFixed(4),
     totalRealizedPnlUsd,
     totalGasCostUsd,
+    totalExecutionCostUsd,
     avgRealizedPnlUsd,
     byMode,
     recent: rows.slice(-20),
@@ -928,7 +970,7 @@ function runReplayBacktest(snapshots = []) {
       const routePlan = buildBestPathPlan(assessed);
       const selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
 
-      let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason, gasCostUsd: 0, netAfterGasUsd: 0 };
+      let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason, gasCostUsd: 0, executionCostUsd: 0, netAfterGasUsd: 0, netAfterAllCostsUsd: 0 };
       if (selected.risk.pass) result = executeOpportunity(selected.opp);
 
       runs.push({
@@ -1075,7 +1117,9 @@ function runOnce() {
     routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
     routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
     gasCostUsd: result.gasCostUsd || 0,
+    executionCostUsd: result.executionCostUsd || 0,
     netAfterGasUsd: result.netAfterGasUsd || 0,
+    netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
     tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
     consideredCount: opportunities.length,
     mode: state.session.mode,
@@ -1125,3 +1169,4 @@ module.exports = {
   startStreamingSignalListeners,
   resetStreamingSignalCache
 };
+

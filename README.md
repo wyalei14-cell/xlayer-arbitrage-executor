@@ -114,6 +114,9 @@ Default runtime risk config in `src/engine.js`:
 - `gasSafetyMultiplier` (default `1.15`)
 - `routeComplexityPenaltyUsdPerHop` (default `0.2`) penalizes multi-hop route complexity in best-path ranking
 - `routeDexDiversityBonusUsd` (default `0.05`) small bonus for route venue diversity in best-path ranking
+- `routerFeeBps` (default `1`) aggregator/router execution fee included in net-profit gate
+- `bundleFeeUsd` (default `0.15`) bundle execution overhead for atomic path
+- `flashLoanFeeBps` (default `5`) flash-loan funding fee for larger trades
 - `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
 - `preferAtomicExecution` (default `true`) enforces bundle-first fail-closed execution planning
 - `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan
@@ -125,7 +128,7 @@ Default runtime risk config in `src/engine.js`:
 
 ## Data output
 Execution log file:
-- `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `netAfterGasUsd`, `mode`, and wallet context)
+- `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `executionCostUsd`, `netAfterGasUsd`, `netAfterAllCostsUsd`, `mode`, and wallet context)
 
 Alert log file:
 - `data/alerts.jsonl` (appends active alert snapshots; fail-closed operational visibility)

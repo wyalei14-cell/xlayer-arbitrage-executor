@@ -37,6 +37,7 @@ code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
   <div class="card"><strong>Execution Rate</strong><br/>${(metrics.executionRate * 100).toFixed(2)}%</div>
   <div class="card"><strong>Avg Realized PnL</strong><br/>$${metrics.avgRealizedPnlUsd}</div>
   <div class="card"><strong>Total Gas Cost</strong><br/>$${metrics.totalGasCostUsd}</div>
+  <div class="card"><strong>Execution Fees</strong><br/>$${metrics.totalExecutionCostUsd || 0}</div>
 </div>
 <div class="card">
   <strong>Paper Mode</strong>: runs=${metrics.byMode.paper.runs}, executed=${metrics.byMode.paper.executed}, pnl=$${metrics.byMode.paper.realizedPnlUsd}<br/>

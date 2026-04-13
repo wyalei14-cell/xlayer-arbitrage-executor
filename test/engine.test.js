@@ -247,6 +247,34 @@ test('executeOpportunity blocks when gas-adjusted net profit is below threshold'
   else process.env.NATIVE_TOKEN_PRICE_USD = prevPrice;
 });
 
+test('executeOpportunity includes router/bundle/flash-loan costs in profitability gate', () => {
+  const prevBundleFee = state.config.bundleFeeUsd;
+  const prevFlashFee = state.config.flashLoanFeeBps;
+  const prevRouterFee = state.config.routerFeeBps;
+
+  state.config.bundleFeeUsd = 2;
+  state.config.flashLoanFeeBps = 10;
+  state.config.routerFeeBps = 5;
+  setMode('live');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 1000,
+    slippageUsd: 0.4,
+    netProfitUsd: 3
+  });
+
+  assert.equal(out.success, false);
+  assert.equal(out.reason, 'profit-too-low-after-gas');
+  assert.ok(out.executionCostUsd > 2);
+  assert.ok(out.netAfterAllCostsUsd < state.config.minNetProfitUsd);
+
+  state.config.bundleFeeUsd = prevBundleFee;
+  state.config.flashLoanFeeBps = prevFlashFee;
+  state.config.routerFeeBps = prevRouterFee;
+});
+
 test('runtime state persists mode and wallet session', () => {
   setMode('live');
   walletLogin({ address: '0x1234567890abcdef1234567890abcdef12345678', provider: 'agentic-wallet' });
@@ -289,9 +317,9 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   fs.writeFileSync(
     ledgerFile,
     [
-      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 4.5, gasCostUsd: 0.2, mode: 'paper' }),
-      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, gasCostUsd: 0, mode: 'paper' }),
-      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.5, gasCostUsd: 0.3, mode: 'live' })
+      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 4.5, gasCostUsd: 0.2, executionCostUsd: 0.1, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, gasCostUsd: 0, executionCostUsd: 0, mode: 'paper' }),
+      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.5, gasCostUsd: 0.3, executionCostUsd: 0.2, mode: 'live' })
     ].join('\n') + '\n'
   );
 
@@ -301,6 +329,7 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   assert.equal(metrics.executedCount, 2);
   assert.equal(metrics.totalRealizedPnlUsd, 7);
   assert.equal(metrics.totalGasCostUsd, 0.5);
+  assert.equal(metrics.totalExecutionCostUsd, 0.3);
   assert.equal(metrics.byMode.paper.runs, 2);
   assert.equal(metrics.byMode.live.executed, 1);
 });
