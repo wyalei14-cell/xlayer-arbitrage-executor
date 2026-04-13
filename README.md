@@ -36,6 +36,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - recheck-before-send
   - bounded retries
   - OnchainOS preflight chain: Wallet -> DEX tx build -> Security tx scan -> Gateway estimate/simulate
+  - **paper/live adapter parity**: paper mode also runs preflight (mock/live adapters) before fill
   - fail-closed preflight guard (blocks execution if any integration check fails)
   - tx hash + realized pnl record
 - Loop mode:
@@ -96,6 +97,7 @@ Default runtime risk config in `src/engine.js`:
 - `failClosedOnMissingOnchainOS` (default `true`)
 - `nativeTokenPriceUsd` (default `45`)
 - `gasSafetyMultiplier` (default `1.15`)
+- `preflightInPaper` (default `true`) keeps paper mode fail-closed and gas-aware via preflight estimate/simulation
 
 ## Data output
 Execution log file:

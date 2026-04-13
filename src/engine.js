@@ -20,6 +20,7 @@ const state = {
     failClosedOnMissingOnchainOS: true,
     nativeTokenPriceUsd: 45,
     gasSafetyMultiplier: 1.15,
+    preflightInPaper: true,
     enableStreamingSignals: true,
     wsQuoteFile: path.join(process.cwd(), 'data', 'ws-quotes.json'),
     mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
@@ -529,17 +530,32 @@ function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
 
   if (state.session.mode === 'paper') {
-    const paperGasCostUsd = +(Math.max(0.01, rechecked.tradeAmountUsd * 0.0005)).toFixed(4);
-    const paperNetAfterGasUsd = +((rechecked.netProfitUsd || 0) - paperGasCostUsd).toFixed(4);
-    if (paperNetAfterGasUsd < state.config.minNetProfitUsd) {
+    const preflight = state.config.preflightInPaper
+      ? buildOnchainExecutionPlan(rechecked)
+      : { ok: true, reason: 'paper-preflight-disabled', provider: 'paper-executor' };
+
+    const economics = evaluateExecutionEconomics(rechecked, preflight);
+    if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
+      return {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: preflight.reason,
+        gasCostUsd: economics.gasCostUsd,
+        netAfterGasUsd: economics.netAfterGasUsd,
+        preflight
+      };
+    }
+
+    if (economics.netAfterGasUsd < state.config.minNetProfitUsd) {
       return {
         success: false,
         txHash: null,
         realizedProfitUsd: 0,
         reason: 'profit-too-low-after-gas',
-        gasCostUsd: paperGasCostUsd,
-        netAfterGasUsd: paperNetAfterGasUsd,
-        preflight: { ok: true, reason: 'paper-mode', provider: 'paper-executor' }
+        gasCostUsd: economics.gasCostUsd,
+        netAfterGasUsd: economics.netAfterGasUsd,
+        preflight
       };
     }
 
@@ -547,11 +563,11 @@ function executeOpportunity(opp) {
     return {
       success: true,
       txHash: paperHash,
-      realizedProfitUsd: +(paperNetAfterGasUsd * 0.92).toFixed(4),
+      realizedProfitUsd: +(economics.netAfterGasUsd * 0.92).toFixed(4),
       reason: 'paper-filled',
-      gasCostUsd: paperGasCostUsd,
-      netAfterGasUsd: paperNetAfterGasUsd,
-      preflight: { ok: true, reason: 'paper-mode', provider: 'paper-executor' }
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
+      preflight
     };
   }
 

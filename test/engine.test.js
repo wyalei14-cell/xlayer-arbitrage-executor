@@ -133,6 +133,26 @@ test('executeOpportunity blocks when security scan flags transaction in live mod
   else process.env.SECURITY_FORCE_BLOCK = prev;
 });
 
+test('executeOpportunity also fail-closes on preflight security block in paper mode', () => {
+  const prev = process.env.SECURITY_FORCE_BLOCK;
+  process.env.SECURITY_FORCE_BLOCK = 'true';
+  setMode('paper');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.match(out.reason, /security-blocked/);
+
+  if (prev === undefined) delete process.env.SECURITY_FORCE_BLOCK;
+  else process.env.SECURITY_FORCE_BLOCK = prev;
+});
+
 test('executeOpportunity blocks when gas-adjusted net profit is below threshold', () => {
   const prevPrice = process.env.NATIVE_TOKEN_PRICE_USD;
   process.env.NATIVE_TOKEN_PRICE_USD = '1000000';
