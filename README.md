@@ -18,6 +18,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - fail-closed quote validation (missing fields / stale snapshots)
   - min profit threshold
   - max trade amount
+  - liquidity-aware dynamic position sizing (`maxLiquidityUsagePct`)
+  - per-leg minimum liquidity guard (`minLegLiquidityUsd`)
   - max slippage
   - deny token list
 - Execution:
@@ -54,6 +56,11 @@ npm test
 - `QUOTE_ADAPTER_URL=https://...` (required for `QUOTE_ADAPTER=live`)
 - `PORT=8787` (api server)
 
+## Config highlights
+Default runtime risk config in `src/engine.js`:
+- `minLegLiquidityUsd` (default `50000`)
+- `maxLiquidityUsagePct` (default `2`)
+
 ## Data output
 Execution log file:
-- `data/executions.jsonl`
+- `data/executions.jsonl` (includes `tradeAmountUsd` per attempt)

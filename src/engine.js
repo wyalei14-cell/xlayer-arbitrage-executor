@@ -11,7 +11,9 @@ const state = {
     scanIntervalMs: 15000,
     tradeAmountUsd: 120,
     maxQuoteAgeMs: 45_000,
-    maxExecutionRetries: 2
+    maxExecutionRetries: 2,
+    minLegLiquidityUsd: 50_000,
+    maxLiquidityUsagePct: 2
   }
 };
 
@@ -68,6 +70,12 @@ function estimateLegCost(amountUsd, feePct, slippagePct) {
   return amountUsd * ((feePct + slippagePct) / 100);
 }
 
+function liquidityBoundedAmount(legs) {
+  const minLiqUsd = Math.min(...legs.map((x) => x.liqUsd));
+  const maxByLiquidity = minLiqUsd * (state.config.maxLiquidityUsagePct / 100);
+  return Math.min(state.config.tradeAmountUsd, maxByLiquidity, state.config.maxTradeAmountUsd);
+}
+
 function detectTwoPool(quotes) {
   const buckets = new Map();
   for (const q of quotes) {
@@ -83,16 +91,19 @@ function detectTwoPool(quotes) {
       for (let j = i + 1; j < rows.length; j++) {
         const a = rows[i];
         const b = rows[j];
+        const tradeAmountUsd = liquidityBoundedAmount([a, b]);
+        if (tradeAmountUsd <= 0) continue;
         const spread = Math.abs(a.price - b.price) / Math.min(a.price, b.price);
-        const gross = state.config.tradeAmountUsd * spread;
-        const fee = estimateLegCost(state.config.tradeAmountUsd, a.feePct + b.feePct, 0);
-        const slip = estimateLegCost(state.config.tradeAmountUsd, 0, a.slippagePct + b.slippagePct);
+        const gross = tradeAmountUsd * spread;
+        const fee = estimateLegCost(tradeAmountUsd, a.feePct + b.feePct, 0);
+        const slip = estimateLegCost(tradeAmountUsd, 0, a.slippagePct + b.slippagePct);
         const net = +(gross - fee - slip).toFixed(4);
 
         out.push({
           type: 'two-pool',
           path: [`${a.base}->${a.quote}@${a.dex}`, `${b.quote}->${b.base}@${b.dex}`],
           legs: [a, b],
+          tradeAmountUsd: +tradeAmountUsd.toFixed(4),
           grossProfitUsd: +gross.toFixed(4),
           feeUsd: +fee.toFixed(4),
           slippageUsd: +slip.toFixed(4),
@@ -120,7 +131,6 @@ function detectTriangular(quotes) {
   const tokens = Array.from(new Set(quotes.flatMap((q) => [q.base, q.quote])));
   const out = [];
   const startToken = 'USDC';
-  const startAmount = state.config.tradeAmountUsd;
 
   for (const t1 of tokens) {
     if (t1 === startToken) continue;
@@ -130,19 +140,22 @@ function detectTriangular(quotes) {
       const leg2 = quotes.filter((q) => [q.base, q.quote].includes(t1) && [q.base, q.quote].includes(t2));
       const leg3 = quotes.filter((q) => [q.base, q.quote].includes(t2) && [q.base, q.quote].includes(startToken));
       for (const a of leg1) for (const b of leg2) for (const c of leg3) {
-        const out1 = edgeOut(a, startToken, startAmount);
+        const tradeAmountUsd = liquidityBoundedAmount([a, b, c]);
+        if (tradeAmountUsd <= 0) continue;
+        const out1 = edgeOut(a, startToken, tradeAmountUsd);
         const out2 = out1 ? edgeOut(b, t1, out1) : null;
         const out3 = out2 ? edgeOut(c, t2, out2) : null;
         if (!out3) continue;
 
-        const gross = Math.max(0, out3 - startAmount);
-        const fee = estimateLegCost(startAmount, a.feePct + b.feePct + c.feePct, 0);
-        const slip = estimateLegCost(startAmount, 0, a.slippagePct + b.slippagePct + c.slippagePct);
+        const gross = Math.max(0, out3 - tradeAmountUsd);
+        const fee = estimateLegCost(tradeAmountUsd, a.feePct + b.feePct + c.feePct, 0);
+        const slip = estimateLegCost(tradeAmountUsd, 0, a.slippagePct + b.slippagePct + c.slippagePct);
         const net = +(gross - fee - slip).toFixed(4);
         out.push({
           type: 'triangular',
           path: [`${startToken}->${t1}@${a.dex}`, `${t1}->${t2}@${b.dex}`, `${t2}->${startToken}@${c.dex}`],
           legs: [a, b, c],
+          tradeAmountUsd: +tradeAmountUsd.toFixed(4),
           grossProfitUsd: +gross.toFixed(4),
           feeUsd: +fee.toFixed(4),
           slippageUsd: +slip.toFixed(4),
@@ -170,8 +183,10 @@ function scanOpportunities() {
 function riskCheck(opp) {
   if (!opp) return { pass: false, reason: 'no-opportunity' };
   if (state.config.denyTokens.some((t) => opp.path.join('|').includes(t))) return { pass: false, reason: 'deny-token' };
-  if (state.config.tradeAmountUsd > state.config.maxTradeAmountUsd) return { pass: false, reason: 'trade-amount-too-high' };
-  const impliedSlippagePct = 100 * (opp.slippageUsd / state.config.tradeAmountUsd);
+  if ((opp.tradeAmountUsd || 0) > state.config.maxTradeAmountUsd) return { pass: false, reason: 'trade-amount-too-high' };
+  if ((opp.tradeAmountUsd || 0) <= 0) return { pass: false, reason: 'trade-amount-invalid' };
+  if ((opp.legs || []).some((leg) => leg.liqUsd < state.config.minLegLiquidityUsd)) return { pass: false, reason: 'liquidity-too-low' };
+  const impliedSlippagePct = 100 * (opp.slippageUsd / opp.tradeAmountUsd);
   if (impliedSlippagePct > state.config.maxSlippagePct) return { pass: false, reason: 'slippage-too-high' };
   if (opp.netProfitUsd < state.config.minNetProfitUsd) return { pass: false, reason: 'profit-too-low' };
   return { pass: true, reason: 'ok' };
@@ -253,6 +268,7 @@ function runOnce() {
     feeUsd: selected.opp?.feeUsd || 0,
     slippageUsd: selected.opp?.slippageUsd || 0,
     netProfitUsd: selected.opp?.netProfitUsd || 0,
+    tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
     consideredCount: opportunities.length,
     ...result
   };
@@ -262,4 +278,4 @@ function runOnce() {
   return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot };
 }
 
-module.exports = { state, runOnce, scanOpportunities, optimizeFromHistory, validateMarket, detectTwoPool, detectTriangular, liveMarket };
+module.exports = { state, runOnce, scanOpportunities, optimizeFromHistory, validateMarket, detectTwoPool, detectTriangular, riskCheck, liveMarket };
