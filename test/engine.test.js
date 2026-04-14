@@ -751,6 +751,35 @@ test('evaluateRuntimeAlerts triggers consecutive failure and low execution warni
   assert.ok(out.alerts.some((a) => a.code === 'low-execution-rate'));
 });
 
+test('evaluateRuntimeAlerts raises failure-reason-burst when one failure mode dominates', () => {
+  const rows = [
+    { success: false, reason: 'gateway-preflight-failed', realizedProfitUsd: -0.1, gasCostUsd: 0.05, netProfitUsd: 0.3 },
+    { success: false, reason: 'gateway-preflight-failed', realizedProfitUsd: -0.1, gasCostUsd: 0.05, netProfitUsd: 0.3 },
+    { success: false, reason: 'gateway-preflight-failed', realizedProfitUsd: -0.1, gasCostUsd: 0.05, netProfitUsd: 0.3 },
+    { success: false, reason: 'gateway-preflight-failed', realizedProfitUsd: -0.1, gasCostUsd: 0.05, netProfitUsd: 0.3 },
+    { success: true, reason: 'executed-attempt-1', realizedProfitUsd: 0.4, gasCostUsd: 0.05, netProfitUsd: 0.8 }
+  ];
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      alertWindow: 10,
+      alertFailureReasonBurstCount: 4
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({
+    rows,
+    metrics: { sampleSize: rows.length, executionRate: 0.2, totalRealizedPnlUsd: 0 },
+    runtimeState
+  });
+
+  assert.ok(out.alerts.some((a) => a.code === 'failure-reason-burst' && a.reason === 'gateway-preflight-failed'));
+  assert.equal(out.stats.topFailureReason, 'gateway-preflight-failed');
+  assert.equal(out.stats.topFailureCount, 4);
+});
+
 test('getAlertStatus raises wallet-session-missing in live autopilot mode', () => {
   state.autopilot = true;
   setMode('live');

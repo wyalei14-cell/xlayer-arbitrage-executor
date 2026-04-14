@@ -67,6 +67,7 @@ const state = {
     flashLoanFeeBps: 5,
     alertWindow: 20,
     alertMaxConsecutiveFailures: 5,
+    alertFailureReasonBurstCount: Number(process.env.ALERT_FAILURE_REASON_BURST_COUNT || 4),
     alertMinExecutionRate: 0.2,
     alertMinRecentPnlUsd: -5,
     alertMaxGasCostShare: 0.6,
@@ -1492,6 +1493,27 @@ function getRollingPnlUsd(rows = [], windowMs = 24 * 60 * 60 * 1000, nowTs = now
     .toFixed(4);
 }
 
+function getTopFailureReason(rows = []) {
+  const reasonCounts = new Map();
+
+  for (const row of rows) {
+    if (row?.success) continue;
+    const reason = String(row?.reason || 'unknown-failure');
+    reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+  }
+
+  let topReason = null;
+  let topCount = 0;
+  for (const [reason, count] of reasonCounts.entries()) {
+    if (count > topCount) {
+      topReason = reason;
+      topCount = count;
+    }
+  }
+
+  return { reason: topReason, count: topCount, totalFailures: [...reasonCounts.values()].reduce((sum, c) => sum + c, 0) };
+}
+
 function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   const alerts = [];
   const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
@@ -1510,6 +1532,19 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       message: `Consecutive failed runs reached ${consecutiveFailures}`,
       value: consecutiveFailures,
       threshold: runtimeState.config.alertMaxConsecutiveFailures
+    });
+  }
+
+  const topFailureReason = getTopFailureReason(recentRows);
+  const failureBurstThreshold = Number(runtimeState.config.alertFailureReasonBurstCount || 0);
+  if (failureBurstThreshold > 0 && topFailureReason.count >= failureBurstThreshold) {
+    alerts.push({
+      level: 'warning',
+      code: 'failure-reason-burst',
+      message: `Failure reason '${topFailureReason.reason}' repeated ${topFailureReason.count} times in recent window`,
+      value: topFailureReason.count,
+      threshold: failureBurstThreshold,
+      reason: topFailureReason.reason
     });
   }
 
@@ -1630,7 +1665,10 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       rolling24hPnlUsd,
       consecutiveFailures,
       gasShare,
-      avgPreflightLatencyMs
+      avgPreflightLatencyMs,
+      topFailureReason: topFailureReason.reason,
+      topFailureCount: topFailureReason.count,
+      totalFailuresInWindow: topFailureReason.totalFailures
     }
   };
 }

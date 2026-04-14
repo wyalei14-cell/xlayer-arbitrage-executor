@@ -66,6 +66,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Alert escalation hooks:
   - optional webhook delivery for warning/critical alert snapshots (`ALERT_NOTIFY_WEBHOOK_URL`)
   - dedupe-aware delivery (same signature uses `alertDedupWindowMs` suppression)
+  - repeated failure-reason burst detection (e.g. repeated gateway/security/preflight blocks) for faster root-cause triage
   - non-blocking delivery with timeout + error telemetry (`data/alert-notify-errors.jsonl`)
 - Drawdown protection:
   - rolling 24h realized PnL warning + hard loss cap (`ALERT_MAX_DAILY_LOSS_USD`, `MAX_DAILY_LOSS_USD`)
@@ -137,6 +138,7 @@ node src/cli.js wallet-logout
 - `MAX_PREFLIGHT_LATENCY_MS=5000` (hard fail-closed cap: block execution when single preflight latency exceeds threshold)
 - `ALERT_MAX_DAILY_LOSS_USD=-20` (warning threshold for rolling 24h realized PnL drawdown)
 - `MAX_DAILY_LOSS_USD=-30` (critical fail-closed cap for rolling 24h realized PnL; breaches pause execution)
+- `ALERT_FAILURE_REASON_BURST_COUNT=4` (warning threshold: repeated identical failure reason count in alert window)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
 - `ALERT_NOTIFY_WEBHOOK_URL=https://...` (optional monitoring webhook receiver for alert escalations)
 - `ALERT_NOTIFY_MIN_LEVEL=critical|warning|info` (minimum level sent to webhook; default `critical`)
@@ -169,6 +171,7 @@ Default runtime risk config in `src/engine.js`:
 - `streamingBootstrapGraceMs` (default `30000`) max listener bootstrap time before missing-stream warnings fail-close execution
 - `alertWindow` (default `20`) rolling sample size for runtime alert checks
 - `alertMaxConsecutiveFailures` (default `5`) critical alert threshold
+- `alertFailureReasonBurstCount` (default `4`) warning threshold for dominant repeated failure reason in recent window
 - `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5
 - `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
