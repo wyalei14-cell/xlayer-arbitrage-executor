@@ -65,6 +65,8 @@ const state = {
     maxExecutionGasCostShare: Number(process.env.MAX_EXECUTION_GAS_COST_SHARE || 0.7),
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
     alertMaxPreflightLatencyMs: Number(process.env.ALERT_MAX_PREFLIGHT_LATENCY_MS || 2_500),
+    alertMaxDailyLossUsd: Number(process.env.ALERT_MAX_DAILY_LOSS_USD || -20),
+    maxDailyLossUsd: Number(process.env.MAX_DAILY_LOSS_USD || -30),
     alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
     failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true',
     alertNotifyWebhookUrl: process.env.ALERT_NOTIFY_WEBHOOK_URL || '',
@@ -1281,6 +1283,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
   );
 
   const lastRecord = rows.at(-1) || null;
+  const rolling24hPnlUsd = getRollingPnlUsd(rows);
 
   return {
     sampleSize: rows.length,
@@ -1288,6 +1291,7 @@ function getPnlMetrics({ limit = 200 } = {}) {
     executedCount: executed.length,
     executionRate: +(executed.length / Math.max(trades.length, 1)).toFixed(4),
     totalRealizedPnlUsd,
+    rolling24hPnlUsd,
     totalGasCostUsd,
     totalExecutionCostUsd,
     avgRealizedPnlUsd,
@@ -1352,6 +1356,16 @@ function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
   return alerts;
 }
 
+function getRollingPnlUsd(rows = [], windowMs = 24 * 60 * 60 * 1000, nowTs = now()) {
+  return +rows
+    .filter((row) => {
+      const ts = Date.parse(row?.ts || '');
+      return Number.isFinite(ts) && nowTs - ts <= windowMs;
+    })
+    .reduce((sum, row) => sum + (row.realizedProfitUsd || 0), 0)
+    .toFixed(4);
+}
+
 function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   const alerts = [];
   const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
@@ -1391,6 +1405,27 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       message: `Recent PnL fell to ${recentPnlUsd}`,
       value: recentPnlUsd,
       threshold: runtimeState.config.alertMinRecentPnlUsd
+    });
+  }
+
+  const rolling24hPnlUsd = getRollingPnlUsd(rows);
+  if (rolling24hPnlUsd <= Number(runtimeState.config.alertMaxDailyLossUsd || -Infinity)) {
+    alerts.push({
+      level: 'warning',
+      code: 'daily-loss-warning',
+      message: `24h realized PnL fell to ${rolling24hPnlUsd}`,
+      value: rolling24hPnlUsd,
+      threshold: runtimeState.config.alertMaxDailyLossUsd
+    });
+  }
+
+  if (rolling24hPnlUsd <= Number(runtimeState.config.maxDailyLossUsd || -Infinity)) {
+    alerts.push({
+      level: 'critical',
+      code: 'daily-loss-limit-breached',
+      message: `24h realized PnL ${rolling24hPnlUsd} breached max daily loss limit`,
+      value: rolling24hPnlUsd,
+      threshold: runtimeState.config.maxDailyLossUsd
     });
   }
 
@@ -1453,6 +1488,7 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       executionRate: metrics.executionRate,
       totalRealizedPnlUsd: metrics.totalRealizedPnlUsd,
       recentPnlUsd,
+      rolling24hPnlUsd,
       consecutiveFailures,
       gasShare,
       avgPreflightLatencyMs

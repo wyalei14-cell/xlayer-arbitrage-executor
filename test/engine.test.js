@@ -740,6 +740,35 @@ test('evaluateRuntimeAlerts raises critical high-gas-pressure from runtime signa
   assert.ok(out.alerts.some((a) => a.code === 'high-gas-pressure' && a.level === 'critical'));
 });
 
+test('evaluateRuntimeAlerts raises warning/critical alerts when 24h loss limits are breached', () => {
+  const nowIso = new Date().toISOString();
+  const rows = [
+    { ts: nowIso, success: false, realizedProfitUsd: -12, gasCostUsd: 0.1, netProfitUsd: 0 },
+    { ts: nowIso, success: false, realizedProfitUsd: -10, gasCostUsd: 0.1, netProfitUsd: 0 }
+  ];
+  const metrics = {
+    sampleSize: rows.length,
+    executionRate: 0,
+    totalRealizedPnlUsd: -22,
+    rolling24hPnlUsd: -22
+  };
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      alertWindow: 10,
+      alertMaxDailyLossUsd: -15,
+      maxDailyLossUsd: -20
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({ rows, metrics, runtimeState });
+  assert.ok(out.alerts.some((a) => a.code === 'daily-loss-warning' && a.level === 'warning'));
+  assert.ok(out.alerts.some((a) => a.code === 'daily-loss-limit-breached' && a.level === 'critical'));
+  assert.equal(out.stats.rolling24hPnlUsd, -22);
+});
+
 test('evaluateRuntimeAlerts raises slow preflight latency warning from recent runs', () => {
   const rows = [
     { success: true, realizedProfitUsd: 1.2, gasCostUsd: 0.2, netProfitUsd: 2.1, onchainPreflight: { telemetry: { durationMs: 3200 } } },

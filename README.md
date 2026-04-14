@@ -65,6 +65,9 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - optional webhook delivery for warning/critical alert snapshots (`ALERT_NOTIFY_WEBHOOK_URL`)
   - dedupe-aware delivery (same signature uses `alertDedupWindowMs` suppression)
   - non-blocking delivery with timeout + error telemetry (`data/alert-notify-errors.jsonl`)
+- Drawdown protection:
+  - rolling 24h realized PnL warning + hard loss cap (`ALERT_MAX_DAILY_LOSS_USD`, `MAX_DAILY_LOSS_USD`)
+  - hard cap emits critical alert and trips fail-closed execution circuit breaker
   - `GET /config`
   - `GET /session`
   - `GET /healthz`
@@ -126,6 +129,8 @@ node src/cli.js wallet-logout
 - `STREAMING_BOOTSTRAP_GRACE_MS=30000` (fail-closed bootstrap grace window; block execution if websocket/mempool listeners produce no fresh updates after this window)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
 - `ALERT_MAX_PREFLIGHT_LATENCY_MS=2500` (warning threshold for rolling average Wallet→DEX→Security→Gateway preflight latency)
+- `ALERT_MAX_DAILY_LOSS_USD=-20` (warning threshold for rolling 24h realized PnL drawdown)
+- `MAX_DAILY_LOSS_USD=-30` (critical fail-closed cap for rolling 24h realized PnL; breaches pause execution)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
 - `ALERT_NOTIFY_WEBHOOK_URL=https://...` (optional monitoring webhook receiver for alert escalations)
 - `ALERT_NOTIFY_MIN_LEVEL=critical|warning|info` (minimum level sent to webhook; default `critical`)
@@ -160,6 +165,8 @@ Default runtime risk config in `src/engine.js`:
 - `maxExecutionGasCostShare` (default `0.7`) hard fail-closed cap for per-trade gas share gating before send
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
 - `alertMaxPreflightLatencyMs` (default `2500`) warning alert when recent average preflight latency is degraded
+- `alertMaxDailyLossUsd` (default `-20`) warning threshold for rolling 24h realized PnL drawdown
+- `maxDailyLossUsd` (default `-30`) critical rolling 24h realized PnL loss cap; triggers execution fail-close
 - `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window
 - `alertNotifyWebhookUrl` (default empty) optional webhook endpoint for alert escalation delivery
 - `alertNotifyMinLevel` (default `critical`) escalation threshold for webhook notifications
