@@ -12,6 +12,11 @@ const streamingCache = {
   mempoolUpdatedAt: null
 };
 
+const alertCache = {
+  lastSignature: null,
+  lastTs: 0
+};
+
 const state = {
   autopilot: false,
   config: {
@@ -51,6 +56,7 @@ const state = {
     alertMinRecentPnlUsd: -5,
     alertMaxGasCostShare: 0.6,
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
+    alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
     failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true'
   },
   session: {
@@ -441,6 +447,11 @@ function resetStreamingSignalCache() {
   streamingCache.mempoolUpdatedAt = null;
   state.runtimeSignals.wsDroppedStale = 0;
   state.runtimeSignals.mempoolDroppedStale = 0;
+}
+
+function resetAlertSnapshotCache() {
+  alertCache.lastSignature = null;
+  alertCache.lastTs = 0;
 }
 
 function startStreamingSignalListeners() {
@@ -1227,11 +1238,31 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   };
 }
 
+function alertSnapshotSignature(snapshot) {
+  const alerts = (snapshot?.alerts || [])
+    .map((a) => `${a.level || 'unknown'}:${a.code || 'unknown'}`)
+    .sort();
+  return alerts.join('|');
+}
+
 function appendAlertSnapshot(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.alerts) || snapshot.alerts.length === 0) return;
+
+  const signature = alertSnapshotSignature(snapshot);
+  const ts = now();
+  const dedupWindowMs = Math.max(0, Number(state.config.alertDedupWindowMs || 0));
+  const withinDedupWindow = dedupWindowMs > 0
+    && signature === alertCache.lastSignature
+    && ts - alertCache.lastTs < dedupWindowMs;
+
+  if (withinDedupWindow) return;
+
   const file = path.join(process.cwd(), 'data', 'alerts.jsonl');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, JSON.stringify(snapshot) + '\n');
+
+  alertCache.lastSignature = signature;
+  alertCache.lastTs = ts;
 }
 
 function getAlertStatus() {
@@ -1626,6 +1657,7 @@ module.exports = {
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
-  resetStreamingSignalCache
+  resetStreamingSignalCache,
+  resetAlertSnapshotCache
 };
 

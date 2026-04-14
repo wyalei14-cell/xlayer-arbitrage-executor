@@ -32,7 +32,8 @@ const {
   getAlertStatus,
   evaluateExecutionCircuitBreaker,
   staleSignalExecutionGuard,
-  resetStreamingSignalCache
+  resetStreamingSignalCache,
+  resetAlertSnapshotCache
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
@@ -40,6 +41,7 @@ const executionsFile = path.join(process.cwd(), 'data', 'executions.jsonl');
 const wsQuotesFile = path.join(process.cwd(), 'data', 'ws-quotes.json');
 const mempoolFile = path.join(process.cwd(), 'data', 'mempool.json');
 const preflightFile = path.join(process.cwd(), 'data', 'preflight.jsonl');
+const alertsFile = path.join(process.cwd(), 'data', 'alerts.jsonl');
 
 function resetSession() {
   state.autopilot = false;
@@ -55,11 +57,13 @@ function resetSession() {
 test.beforeEach(() => {
   resetSession();
   resetStreamingSignalCache();
+  resetAlertSnapshotCache();
   if (fs.existsSync(runtimeStateFile)) fs.unlinkSync(runtimeStateFile);
   if (fs.existsSync(executionsFile)) fs.unlinkSync(executionsFile);
   if (fs.existsSync(wsQuotesFile)) fs.unlinkSync(wsQuotesFile);
   if (fs.existsSync(mempoolFile)) fs.unlinkSync(mempoolFile);
   if (fs.existsSync(preflightFile)) fs.unlinkSync(preflightFile);
+  if (fs.existsSync(alertsFile)) fs.unlinkSync(alertsFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -804,4 +808,22 @@ test('runPaperSoak stops early on critical alert when enabled', async () => {
   state.config.alertMaxConsecutiveFailures = prevFailures;
   if (prevSecurity === undefined) delete process.env.SECURITY_FORCE_BLOCK;
   else process.env.SECURITY_FORCE_BLOCK = prevSecurity;
+});
+
+test('appendAlertSnapshot deduplicates repeated alert signatures inside dedup window', () => {
+  const prevDedup = state.config.alertDedupWindowMs;
+  state.config.alertDedupWindowMs = 60_000;
+
+  state.autopilot = true;
+  setMode('live');
+  walletLogout();
+
+  runOnce();
+  runOnce();
+
+  assert.equal(fs.existsSync(alertsFile), true);
+  const lines = fs.readFileSync(alertsFile, 'utf8').trim().split('\n').filter(Boolean);
+  assert.equal(lines.length, 1);
+
+  state.config.alertDedupWindowMs = prevDedup;
 });

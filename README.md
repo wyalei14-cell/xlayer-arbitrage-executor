@@ -115,6 +115,7 @@ node src/cli.js wallet-logout
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
+- `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
 - `FAIL_CLOSED_ON_CRITICAL_ALERTS=true|false` (autopilot execution circuit breaker)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
@@ -142,6 +143,7 @@ Default runtime risk config in `src/engine.js`:
 - `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
+- `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window
 - `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
 
 ## Data output
@@ -152,7 +154,7 @@ Preflight trace log file:
 - `data/preflight.jsonl` (one row per execution attempt with stage-by-stage telemetry: wallet/router/dex/security/gateway/atomic, per-stage `status`, per-stage `durationMs`, and total preflight latency)
 
 Alert log file:
-- `data/alerts.jsonl` (appends active alert snapshots; fail-closed operational visibility)
+- `data/alerts.jsonl` (appends active alert snapshots; duplicate signatures are deduplicated within `alertDedupWindowMs`)
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)
