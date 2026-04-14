@@ -120,6 +120,7 @@ node src/cli.js wallet-logout
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
+- `ALERT_MAX_PREFLIGHT_LATENCY_MS=2500` (warning threshold for rolling average Wallet→DEX→Security→Gateway preflight latency)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
 - `FAIL_CLOSED_ON_CRITICAL_ALERTS=true|false` (autopilot execution circuit breaker)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
@@ -149,6 +150,7 @@ Default runtime risk config in `src/engine.js`:
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
 - `maxExecutionGasCostShare` (default `0.7`) hard fail-closed cap for per-trade gas share gating before send
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
+- `alertMaxPreflightLatencyMs` (default `2500`) warning alert when recent average preflight latency is degraded
 - `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window
 - `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
 

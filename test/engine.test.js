@@ -739,6 +739,32 @@ test('evaluateRuntimeAlerts raises critical high-gas-pressure from runtime signa
   assert.ok(out.alerts.some((a) => a.code === 'high-gas-pressure' && a.level === 'critical'));
 });
 
+test('evaluateRuntimeAlerts raises slow preflight latency warning from recent runs', () => {
+  const rows = [
+    { success: true, realizedProfitUsd: 1.2, gasCostUsd: 0.2, netProfitUsd: 2.1, onchainPreflight: { telemetry: { durationMs: 3200 } } },
+    { success: true, realizedProfitUsd: 1.1, gasCostUsd: 0.2, netProfitUsd: 2.0, onchainPreflight: { telemetry: { durationMs: 2800 } } },
+    { success: false, realizedProfitUsd: -0.2, gasCostUsd: 0.15, netProfitUsd: 0.4, onchainPreflight: { telemetry: { durationMs: 3000 } } }
+  ];
+  const metrics = {
+    sampleSize: rows.length,
+    executionRate: 0.66,
+    totalRealizedPnlUsd: 2.1
+  };
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      alertWindow: 10,
+      alertMaxPreflightLatencyMs: 2500
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({ rows, metrics, runtimeState });
+  assert.ok(out.alerts.some((a) => a.code === 'slow-preflight-latency' && a.level === 'warning'));
+  assert.ok(out.stats.avgPreflightLatencyMs >= 3000);
+});
+
 test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener data is old', () => {
   const staleIso = new Date(Date.now() - 60_000).toISOString();
   const runtimeState = {

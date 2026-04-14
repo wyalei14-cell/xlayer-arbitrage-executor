@@ -63,6 +63,7 @@ const state = {
     alertMaxGasCostShare: 0.6,
     maxExecutionGasCostShare: Number(process.env.MAX_EXECUTION_GAS_COST_SHARE || 0.7),
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
+    alertMaxPreflightLatencyMs: Number(process.env.ALERT_MAX_PREFLIGHT_LATENCY_MS || 2_500),
     alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
     failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true'
   },
@@ -1388,6 +1389,22 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
     });
   }
 
+  const preflightLatencies = recentRows
+    .map((r) => Number(r?.onchainPreflight?.telemetry?.durationMs))
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  const avgPreflightLatencyMs = preflightLatencies.length
+    ? +(preflightLatencies.reduce((sum, v) => sum + v, 0) / preflightLatencies.length).toFixed(2)
+    : 0;
+  if (preflightLatencies.length >= 3 && avgPreflightLatencyMs >= Number(runtimeState.config.alertMaxPreflightLatencyMs || Infinity)) {
+    alerts.push({
+      level: 'warning',
+      code: 'slow-preflight-latency',
+      message: `Average preflight latency reached ${avgPreflightLatencyMs}ms`,
+      value: avgPreflightLatencyMs,
+      threshold: runtimeState.config.alertMaxPreflightLatencyMs
+    });
+  }
+
   if (runtimeState.autopilot && runtimeState.session.mode === 'live' && !runtimeState.session.wallet.loggedIn) {
     alerts.push({
       level: 'critical',
@@ -1408,7 +1425,8 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
       totalRealizedPnlUsd: metrics.totalRealizedPnlUsd,
       recentPnlUsd,
       consecutiveFailures,
-      gasShare
+      gasShare,
+      avgPreflightLatencyMs
     }
   };
 }
