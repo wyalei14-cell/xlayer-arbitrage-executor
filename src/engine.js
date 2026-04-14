@@ -117,6 +117,10 @@ function now() {
   return Date.now();
 }
 
+function createRunId(prefix = 'run') {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function isHexAddress(v) {
   return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
 }
@@ -1177,7 +1181,7 @@ function staleSignalExecutionGuard(runtimeState = state) {
   };
 }
 
-function executeOpportunity(opp) {
+function executeOpportunity(opp, context = {}) {
   const rechecked = { ...opp, recheckTs: now() };
   const signalGuard = staleSignalExecutionGuard(state);
 
@@ -1200,7 +1204,7 @@ function executeOpportunity(opp) {
       ? buildOnchainExecutionPlan(rechecked)
       : { ok: true, reason: 'paper-preflight-disabled', provider: 'paper-executor' };
 
-    appendPreflightRecord(preflight, rechecked);
+    appendPreflightRecord(preflight, rechecked, context);
     const economics = evaluateExecutionEconomics(rechecked, preflight);
     if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
       return {
@@ -1289,7 +1293,7 @@ function executeOpportunity(opp) {
   }
 
   const preflight = buildOnchainExecutionPlan(rechecked);
-  appendPreflightRecord(preflight, rechecked);
+  appendPreflightRecord(preflight, rechecked, context);
   const economics = evaluateExecutionEconomics(rechecked, preflight);
   if (!preflight.ok && state.config.failClosedOnMissingOnchainOS) {
     return {
@@ -1393,7 +1397,7 @@ function appendRecord(obj) {
   fs.appendFileSync(file, JSON.stringify(obj) + '\n');
 }
 
-function appendPreflightRecord(preflight, opp = null) {
+function appendPreflightRecord(preflight, opp = null, context = {}) {
   if (!preflight || !preflight.telemetry) return;
   const file = path.join(process.cwd(), 'data', 'preflight.jsonl');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1402,6 +1406,8 @@ function appendPreflightRecord(preflight, opp = null) {
     file,
     JSON.stringify({
       ts: new Date().toISOString(),
+      runId: context.runId || null,
+      phase: context.phase || 'execute',
       mode: state.session.mode,
       ok: Boolean(preflight.ok),
       reason: preflight.reason,
@@ -1413,6 +1419,7 @@ function appendPreflightRecord(preflight, opp = null) {
 }
 
 function appendRouteDecisionRecord({
+  runId = null,
   selected,
   ranked = [],
   opportunities = [],
@@ -1441,6 +1448,7 @@ function appendRouteDecisionRecord({
     file,
     JSON.stringify({
       ts: new Date().toISOString(),
+      runId,
       mode,
       autopilot,
       phase,
@@ -1843,7 +1851,7 @@ function notifyAlertWebhook(snapshot, runtimeState = state) {
     });
 }
 
-function appendAlertSnapshot(snapshot) {
+function appendAlertSnapshot(snapshot, context = {}) {
   if (!snapshot || !Array.isArray(snapshot.alerts) || snapshot.alerts.length === 0) return;
 
   const signature = alertSnapshotSignature(snapshot);
@@ -1857,7 +1865,14 @@ function appendAlertSnapshot(snapshot) {
 
   const file = path.join(process.cwd(), 'data', 'alerts.jsonl');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, JSON.stringify(snapshot) + '\n');
+  fs.appendFileSync(
+    file,
+    JSON.stringify({
+      ...snapshot,
+      runId: context.runId || null,
+      phase: context.phase || 'runtime-alerts'
+    }) + '\n'
+  );
 
   alertCache.lastSignature = signature;
   alertCache.lastTs = ts;
@@ -2143,10 +2158,12 @@ async function runPaperSoak({ iterations = 20, intervalMs = 1000, stopOnCritical
 }
 
 function runOnce() {
+  const runId = createRunId('sync');
   const lock = acquireExecutionLock();
   if (!lock.ok) {
     const failRecord = {
       ts: new Date().toISOString(),
+      runId,
       routeType: 'none',
       path: [],
       quoteSnapshot: null,
@@ -2162,7 +2179,7 @@ function runOnce() {
     };
     appendRecord(failRecord);
     const alerts = getAlertStatus();
-    appendAlertSnapshot(alerts);
+    appendAlertSnapshot(alerts, { runId, phase: 'sync' });
     return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   }
 
@@ -2176,6 +2193,7 @@ function runOnce() {
       const routePlan = buildBestPathPlan(assessed);
       selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
       appendRouteDecisionRecord({
+        runId,
         selected,
         ranked: routePlan.ranked,
         opportunities,
@@ -2186,6 +2204,7 @@ function runOnce() {
     } catch (err) {
       const failRecord = {
         ts: new Date().toISOString(),
+        runId,
         routeType: 'none',
         path: [],
         quoteSnapshot: null,
@@ -2201,7 +2220,7 @@ function runOnce() {
       };
       appendRecord(failRecord);
       const alerts = getAlertStatus();
-      appendAlertSnapshot(alerts);
+      appendAlertSnapshot(alerts, { runId, phase: 'sync' });
       return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
     }
 
@@ -2222,12 +2241,13 @@ function runOnce() {
       } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
         result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
       } else {
-        result = executeOpportunity(selected.opp);
+        result = executeOpportunity(selected.opp, { runId, phase: 'sync' });
       }
     }
 
     const record = {
       ts: new Date().toISOString(),
+      runId,
       routeType: selected.opp?.type || 'none',
       path: selected.opp?.path || [],
       quoteSnapshot: selected.opp?.legs || null,
@@ -2253,7 +2273,7 @@ function runOnce() {
     appendRecord(record);
     optimizeFromHistory();
     const alerts = getAlertStatus();
-    appendAlertSnapshot(alerts);
+    appendAlertSnapshot(alerts, { runId, phase: 'sync' });
 
     return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   } finally {
@@ -2262,10 +2282,12 @@ function runOnce() {
 }
 
 async function runOnceAsync() {
+  const runId = createRunId('async');
   const lock = acquireExecutionLock();
   if (!lock.ok) {
     const failRecord = {
       ts: new Date().toISOString(),
+      runId,
       routeType: 'none',
       path: [],
       quoteSnapshot: null,
@@ -2281,7 +2303,7 @@ async function runOnceAsync() {
     };
     appendRecord(failRecord);
     const alerts = getAlertStatus();
-    appendAlertSnapshot(alerts);
+    appendAlertSnapshot(alerts, { runId, phase: 'async' });
     return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   }
 
@@ -2295,6 +2317,7 @@ async function runOnceAsync() {
       const routePlan = buildBestPathPlan(assessed);
       selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
       appendRouteDecisionRecord({
+        runId,
         selected,
         ranked: routePlan.ranked,
         opportunities,
@@ -2305,6 +2328,7 @@ async function runOnceAsync() {
     } catch (err) {
       const failRecord = {
         ts: new Date().toISOString(),
+        runId,
         routeType: 'none',
         path: [],
         quoteSnapshot: null,
@@ -2320,7 +2344,7 @@ async function runOnceAsync() {
       };
       appendRecord(failRecord);
       const alerts = getAlertStatus();
-      appendAlertSnapshot(alerts);
+      appendAlertSnapshot(alerts, { runId, phase: 'async' });
       return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
     }
 
@@ -2341,12 +2365,13 @@ async function runOnceAsync() {
       } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
         result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
       } else {
-        result = executeOpportunity(selected.opp);
+        result = executeOpportunity(selected.opp, { runId, phase: 'async' });
       }
     }
 
     const record = {
       ts: new Date().toISOString(),
+      runId,
       routeType: selected.opp?.type || 'none',
       path: selected.opp?.path || [],
       quoteSnapshot: selected.opp?.legs || null,
@@ -2372,7 +2397,7 @@ async function runOnceAsync() {
     appendRecord(record);
     optimizeFromHistory();
     const alerts = getAlertStatus();
-    appendAlertSnapshot(alerts);
+    appendAlertSnapshot(alerts, { runId, phase: 'async' });
 
     return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   } finally {

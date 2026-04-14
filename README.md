@@ -195,16 +195,16 @@ Default runtime risk config in `src/engine.js`:
 
 ## Data output
 Execution log file:
-- `data/executions.jsonl` (includes `tradeAmountUsd`, `gasCostUsd`, `executionCostUsd`, `netAfterGasUsd`, `netAfterAllCostsUsd`, `mode`, and wallet context)
+- `data/executions.jsonl` (includes `runId`, `tradeAmountUsd`, `gasCostUsd`, `executionCostUsd`, `netAfterGasUsd`, `netAfterAllCostsUsd`, `mode`, and wallet context)
 
 Preflight trace log file:
-- `data/preflight.jsonl` (one row per execution attempt with stage-by-stage telemetry: wallet/router/dex/security/gateway/atomic, per-stage `status`, per-stage `durationMs`, and total preflight latency)
+- `data/preflight.jsonl` (one row per execution attempt with `runId` + `phase`, stage-by-stage telemetry: wallet/router/dex/security/gateway/atomic, per-stage `status`, per-stage `durationMs`, and total preflight latency)
 
 Route decision observability log file:
-- `data/route-decisions.jsonl` (one row per scan loop with selected best path + top ranked routing candidates, routing score, estimated execution cost, and risk pass/fail reasons)
+- `data/route-decisions.jsonl` (one row per scan loop with `runId`, selected best path + top ranked routing candidates, routing score, estimated execution cost, and risk pass/fail reasons)
 
 Alert log file:
-- `data/alerts.jsonl` (appends active alert snapshots; duplicate signatures are deduplicated within `alertDedupWindowMs`)
+- `data/alerts.jsonl` (appends active alert snapshots with optional `runId`/`phase`; duplicate signatures are deduplicated within `alertDedupWindowMs`)
 
 Alert webhook error log file:
 - `data/alert-notify-errors.jsonl` (delivery failures/timeouts/non-2xx responses for external alert webhooks)

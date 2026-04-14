@@ -439,18 +439,23 @@ test('executeOpportunity includes router/bundle/flash-loan costs in profitabilit
 test('executeOpportunity writes preflight trace log for execution attempts', () => {
   setMode('paper');
 
-  executeOpportunity({
-    path: ['USDC->OKB@A', 'OKB->USDC@B'],
-    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
-    tradeAmountUsd: 100,
-    slippageUsd: 0.4,
-    netProfitUsd: 8
-  });
+  executeOpportunity(
+    {
+      path: ['USDC->OKB@A', 'OKB->USDC@B'],
+      legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+      tradeAmountUsd: 100,
+      slippageUsd: 0.4,
+      netProfitUsd: 8
+    },
+    { runId: 'test-preflight-run-id', phase: 'unit-test' }
+  );
 
   assert.equal(fs.existsSync(preflightFile), true);
   const lines = fs.readFileSync(preflightFile, 'utf8').trim().split('\n').filter(Boolean);
   assert.ok(lines.length >= 1);
   const row = JSON.parse(lines[lines.length - 1]);
+  assert.equal(row.runId, 'test-preflight-run-id');
+  assert.equal(row.phase, 'unit-test');
   assert.ok(row.telemetry.durationMs >= 0);
   assert.ok(Array.isArray(row.telemetry.stages));
 });
@@ -1090,6 +1095,8 @@ test('runOnce writes route decision observability log with top routing candidate
   assert.ok(rows.length >= 1);
 
   const latest = rows[rows.length - 1];
+  assert.equal(typeof latest.runId, 'string');
+  assert.equal(out.record.runId, latest.runId);
   assert.equal(latest.mode, 'paper');
   assert.equal(latest.phase, 'sync');
   assert.ok(Array.isArray(latest.topCandidates));
