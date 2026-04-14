@@ -1701,6 +1701,46 @@ function getTopFailureReason(rows = []) {
   return { reason: topReason, count: topCount, totalFailures: [...reasonCounts.values()].reduce((sum, c) => sum + c, 0) };
 }
 
+function getFailureReasonMetrics({ limit = 200, windowMs = 24 * 60 * 60 * 1000, nowTs = now() } = {}) {
+  const rows = readExecutionLedger(limit);
+  const reasonMap = new Map();
+
+  for (const row of rows) {
+    if (row?.success) continue;
+
+    const ts = Date.parse(row?.ts || '');
+    if (Number.isFinite(ts) && nowTs - ts > windowMs) continue;
+
+    const reason = String(row?.reason || 'unknown-failure');
+    const mode = row?.mode === 'live' ? 'live' : 'paper';
+    if (!reasonMap.has(reason)) {
+      reasonMap.set(reason, {
+        reason,
+        total: 0,
+        byMode: { paper: 0, live: 0 },
+        latestTs: null
+      });
+    }
+
+    const metric = reasonMap.get(reason);
+    metric.total += 1;
+    metric.byMode[mode] += 1;
+    metric.latestTs = row?.ts || metric.latestTs;
+  }
+
+  const reasons = Array.from(reasonMap.values()).sort((a, b) => b.total - a.total || a.reason.localeCompare(b.reason));
+  const totalFailures = reasons.reduce((sum, item) => sum + item.total, 0);
+
+  return {
+    windowMs,
+    scannedRows: rows.length,
+    totalFailures,
+    uniqueReasons: reasons.length,
+    topReason: reasons[0] || null,
+    reasons
+  };
+}
+
 function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   const alerts = [];
   const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
@@ -2013,6 +2053,7 @@ function getDashboardSnapshot({ tradeLimit = 10, ledgerLimit = 200 } = {}) {
   return {
     ts: new Date().toISOString(),
     metrics,
+    failureReasons: getFailureReasonMetrics({ limit: ledgerLimit }),
     alerts,
     session: {
       autopilot: state.autopilot,
@@ -2034,6 +2075,7 @@ function getPrometheusMetrics() {
   const alertStats = alertStatus.stats || {};
   const executionLockActive = runtimeSignals.executionLockActive ? 1 : 0;
   const preflightStageMetrics = getPreflightStageMetrics(100);
+  const failureMetrics = getFailureReasonMetrics({ limit: 200 });
 
   const lines = [
     '# HELP xlayer_arbitrage_realized_pnl_usd Total realized pnl in USD from execution ledger.',
@@ -2094,12 +2136,24 @@ function getPrometheusMetrics() {
     `xlayer_arbitrage_execution_lock_active ${executionLockActive}`,
     '# HELP xlayer_arbitrage_execution_lock_age_ms Execution lock age in ms.',
     '# TYPE xlayer_arbitrage_execution_lock_age_ms gauge',
-    `xlayer_arbitrage_execution_lock_age_ms ${Number(runtimeSignals.executionLockAgeMs || 0)}`
+    `xlayer_arbitrage_execution_lock_age_ms ${Number(runtimeSignals.executionLockAgeMs || 0)}`,
+    '# HELP xlayer_arbitrage_failure_reasons_total Number of failed runs grouped by reason and mode (24h window).',
+    '# TYPE xlayer_arbitrage_failure_reasons_total gauge',
+    '# HELP xlayer_arbitrage_failures_total Number of failed runs in rolling failure-metrics window.',
+    '# TYPE xlayer_arbitrage_failures_total gauge',
+    `xlayer_arbitrage_failures_total ${Number(failureMetrics.totalFailures || 0)}`
   ];
 
   for (const [stageName, avgMs] of Object.entries(preflightStageMetrics.stageAveragesMs || {})) {
     const sanitizedStage = String(stageName).replace(/"/g, '\\"');
     lines.push(`xlayer_arbitrage_preflight_stage_latency_ms_avg{stage="${sanitizedStage}"} ${Number(avgMs)}`);
+  }
+
+  for (const reasonMetric of failureMetrics.reasons || []) {
+    const sanitizedReason = String(reasonMetric.reason).replace(/"/g, '\\"');
+    lines.push(`xlayer_arbitrage_failure_reasons_total{reason="${sanitizedReason}",mode="paper"} ${Number(reasonMetric.byMode.paper || 0)}`);
+    lines.push(`xlayer_arbitrage_failure_reasons_total{reason="${sanitizedReason}",mode="live"} ${Number(reasonMetric.byMode.live || 0)}`);
+    lines.push(`xlayer_arbitrage_failure_reasons_total{reason="${sanitizedReason}",mode="all"} ${Number(reasonMetric.total || 0)}`);
   }
 
   return `${lines.join('\n')}\n`;
@@ -2610,6 +2664,7 @@ module.exports = {
   getDashboardSnapshot,
   getPrometheusMetrics,
   evaluateExecutionCircuitBreaker,
+  getFailureReasonMetrics,
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,
   startStreamingSignalListeners,

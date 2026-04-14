@@ -29,6 +29,7 @@ const {
   getPnlMetrics,
   getDashboardSnapshot,
   getPrometheusMetrics,
+  getFailureReasonMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
   evaluateExecutionCircuitBreaker,
@@ -539,6 +540,30 @@ test('getDashboardSnapshot exposes recent trade pnl rows for dashboard rendering
   assert.equal(snapshot.recentTrades[0].realizedProfitUsd, 2.4);
   assert.equal(snapshot.recentTrades[1].ts, '2026-04-14T00:01:00.000Z');
   assert.equal(snapshot.metrics.sampleSize, 3);
+  assert.ok(snapshot.failureReasons);
+  assert.equal(snapshot.failureReasons.totalFailures, 1);
+  assert.equal(snapshot.failureReasons.topReason.reason, 'profit-too-low-after-gas');
+});
+
+test('getFailureReasonMetrics aggregates failed reasons by mode', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    [
+      JSON.stringify({ ts: new Date().toISOString(), success: false, mode: 'paper', reason: 'gateway-preflight-failed' }),
+      JSON.stringify({ ts: new Date().toISOString(), success: false, mode: 'live', reason: 'gateway-preflight-failed' }),
+      JSON.stringify({ ts: new Date().toISOString(), success: false, mode: 'paper', reason: 'security-blocked:deny-token' }),
+      JSON.stringify({ ts: new Date().toISOString(), success: true, mode: 'paper', reason: 'executed-attempt-1' })
+    ].join('\n') + '\n'
+  );
+
+  const metrics = getFailureReasonMetrics({ limit: 20 });
+  assert.equal(metrics.totalFailures, 3);
+  assert.equal(metrics.uniqueReasons, 2);
+  assert.equal(metrics.topReason.reason, 'gateway-preflight-failed');
+  assert.equal(metrics.topReason.byMode.paper, 1);
+  assert.equal(metrics.topReason.byMode.live, 1);
 });
 
 test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', () => {
@@ -547,7 +572,8 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
   fs.writeFileSync(
     ledgerFile,
     [
-      JSON.stringify({ ts: new Date().toISOString(), routeType: 'two-pool', success: true, realizedProfitUsd: 2.1, gasCostUsd: 0.1, executionCostUsd: 0.05, mode: 'paper' })
+      JSON.stringify({ ts: new Date().toISOString(), routeType: 'two-pool', success: true, realizedProfitUsd: 2.1, gasCostUsd: 0.1, executionCostUsd: 0.05, mode: 'paper', reason: 'executed-attempt-1' }),
+      JSON.stringify({ ts: new Date().toISOString(), routeType: 'two-pool', success: false, realizedProfitUsd: 0, gasCostUsd: 0.02, executionCostUsd: 0.01, mode: 'paper', reason: 'gateway-preflight-failed' })
     ].join('\n') + '\n'
   );
 
@@ -578,6 +604,8 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
   assert.match(text, /xlayer_arbitrage_preflight_stage_samples/);
   assert.match(text, /xlayer_arbitrage_preflight_stage_latency_ms_avg\{stage="wallet"\}/);
   assert.match(text, /xlayer_arbitrage_execution_lock_active/);
+  assert.match(text, /xlayer_arbitrage_failures_total/);
+  assert.match(text, /xlayer_arbitrage_failure_reasons_total\{reason="gateway-preflight-failed",mode="all"\}/);
 });
 
 test('getPrometheusMetrics reports non-zero runtime signal age when updates are old', () => {

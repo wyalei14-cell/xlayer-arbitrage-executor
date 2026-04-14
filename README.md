@@ -62,6 +62,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Opportunity + operations API:
   - `GET /opportunities`
   - `GET /metrics` (PnL ledger aggregates + recent execution window)
+  - `GET /metrics/errors` (24h failed-run reason distribution for runbook/debug dashboards)
   - `GET /metrics/prometheus` (Prometheus/OpenMetrics text export for runtime + PnL + alert scraping, including gas-pressure, dropped-stream-event counters, preflight-latency average, **preflight stage latency averages from `data/preflight.jsonl`**, and execution-lock gauges)
   - `GET /alerts` (runtime health alerts: failure streak, low execution rate, gas pressure, missing wallet session, stale websocket/mempool listener data)
   - `GET /dashboard` (lightweight HTML dashboard with recent trade PnL table)

@@ -14,6 +14,7 @@ const {
   walletLogin,
   walletLogout,
   getPnlMetrics,
+  getFailureReasonMetrics,
   getAlertStatus,
   getDashboardSnapshot,
   getPrometheusMetrics,
@@ -26,6 +27,7 @@ function renderDashboard(snapshot) {
   const metrics = snapshot.metrics;
   const last = metrics.lastRecord;
   const alertStatus = snapshot.alerts;
+  const failureReasons = snapshot.failureReasons || { totalFailures: 0, topReason: null };
   const rows = (snapshot.recentTrades || [])
     .map(
       (row) => `<tr>
@@ -61,6 +63,7 @@ th { background: #f8fafc; }
   <div class="card"><strong>Avg Realized PnL</strong><br/>$${metrics.avgRealizedPnlUsd}</div>
   <div class="card"><strong>Total Gas Cost</strong><br/>$${metrics.totalGasCostUsd}</div>
   <div class="card"><strong>Execution Fees</strong><br/>$${metrics.totalExecutionCostUsd || 0}</div>
+  <div class="card"><strong>Top Failure</strong><br/>${failureReasons.topReason ? `${failureReasons.topReason.reason} (${failureReasons.topReason.total})` : 'none'}</div>
 </div>
 <div class="card">
   <strong>Paper Mode</strong>: runs=${metrics.byMode.paper.runs}, executed=${metrics.byMode.paper.executed}, pnl=$${metrics.byMode.paper.realizedPnlUsd}<br/>
@@ -82,7 +85,7 @@ th { background: #f8fafc; }
     <tbody>${rows || '<tr><td colspan="7">No trades yet</td></tr>'}</tbody>
   </table>
 </div>
-<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code>, <code>/dashboard-data</code> | Prometheus: <code>/metrics/prometheus</code></p>
+<p>JSON endpoints: <code>/metrics</code>, <code>/metrics/errors</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code>, <code>/dashboard-data</code> | Prometheus: <code>/metrics/prometheus</code></p>
 </body></html>`;
 }
 
@@ -265,6 +268,9 @@ if (cmd === 'api') {
     }
     if (req.url === '/metrics') {
       return res.end(JSON.stringify({ metrics: getPnlMetrics() }));
+    }
+    if (req.url === '/metrics/errors') {
+      return res.end(JSON.stringify({ failureReasons: getFailureReasonMetrics() }));
     }
     if (req.url === '/metrics/prometheus') {
       res.setHeader('content-type', 'text/plain; version=0.0.4; charset=utf-8');
