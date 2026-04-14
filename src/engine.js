@@ -1936,6 +1936,57 @@ function getDashboardSnapshot({ tradeLimit = 10, ledgerLimit = 200 } = {}) {
   };
 }
 
+function getPrometheusMetrics() {
+  const metrics = getPnlMetrics();
+  const alertStatus = getAlertStatus();
+  const criticalAlerts = (alertStatus.alerts || []).filter((a) => a.level === 'critical').length;
+  const warningAlerts = (alertStatus.alerts || []).filter((a) => a.level === 'warning').length;
+  const runtimeSignals = state.runtimeSignals || {};
+
+  const lines = [
+    '# HELP xlayer_arbitrage_realized_pnl_usd Total realized pnl in USD from execution ledger.',
+    '# TYPE xlayer_arbitrage_realized_pnl_usd gauge',
+    `xlayer_arbitrage_realized_pnl_usd ${metrics.totalRealizedPnlUsd}`,
+    '# HELP xlayer_arbitrage_rolling_24h_pnl_usd Rolling 24h realized pnl in USD.',
+    '# TYPE xlayer_arbitrage_rolling_24h_pnl_usd gauge',
+    `xlayer_arbitrage_rolling_24h_pnl_usd ${metrics.rolling24hPnlUsd}`,
+    '# HELP xlayer_arbitrage_executed_trades_total Executed trade count from ledger window.',
+    '# TYPE xlayer_arbitrage_executed_trades_total counter',
+    `xlayer_arbitrage_executed_trades_total ${metrics.executedCount}`,
+    '# HELP xlayer_arbitrage_opportunities_total Opportunity count from ledger window.',
+    '# TYPE xlayer_arbitrage_opportunities_total counter',
+    `xlayer_arbitrage_opportunities_total ${metrics.opportunitiesSeen}`,
+    '# HELP xlayer_arbitrage_execution_rate Execution success rate over opportunities.',
+    '# TYPE xlayer_arbitrage_execution_rate gauge',
+    `xlayer_arbitrage_execution_rate ${metrics.executionRate}`,
+    '# HELP xlayer_arbitrage_gas_cost_usd_total Total gas cost in USD.',
+    '# TYPE xlayer_arbitrage_gas_cost_usd_total counter',
+    `xlayer_arbitrage_gas_cost_usd_total ${metrics.totalGasCostUsd}`,
+    '# HELP xlayer_arbitrage_execution_cost_usd_total Total non-gas execution costs in USD.',
+    '# TYPE xlayer_arbitrage_execution_cost_usd_total counter',
+    `xlayer_arbitrage_execution_cost_usd_total ${metrics.totalExecutionCostUsd}`,
+    '# HELP xlayer_arbitrage_alerts Number of active alerts by level.',
+    '# TYPE xlayer_arbitrage_alerts gauge',
+    `xlayer_arbitrage_alerts{level="critical"} ${criticalAlerts}`,
+    `xlayer_arbitrage_alerts{level="warning"} ${warningAlerts}`,
+    '# HELP xlayer_arbitrage_autopilot_enabled Autopilot state (1 enabled, 0 disabled).',
+    '# TYPE xlayer_arbitrage_autopilot_enabled gauge',
+    `xlayer_arbitrage_autopilot_enabled ${state.autopilot ? 1 : 0}`,
+    '# HELP xlayer_arbitrage_live_mode_enabled Session live-mode state (1 live, 0 paper).',
+    '# TYPE xlayer_arbitrage_live_mode_enabled gauge',
+    `xlayer_arbitrage_live_mode_enabled ${state.session.mode === 'live' ? 1 : 0}`,
+    '# HELP xlayer_arbitrage_wallet_logged_in Wallet session state (1 logged in, 0 logged out).',
+    '# TYPE xlayer_arbitrage_wallet_logged_in gauge',
+    `xlayer_arbitrage_wallet_logged_in ${state.session.wallet.loggedIn ? 1 : 0}`,
+    '# HELP xlayer_arbitrage_runtime_signal_age_ms Runtime websocket/mempool signal age in ms.',
+    '# TYPE xlayer_arbitrage_runtime_signal_age_ms gauge',
+    `xlayer_arbitrage_runtime_signal_age_ms{stream="ws"} ${Number(runtimeSignals.wsSignalAgeMs || 0)}`,
+    `xlayer_arbitrage_runtime_signal_age_ms{stream="mempool"} ${Number(runtimeSignals.mempoolSignalAgeMs || 0)}`
+  ];
+
+  return `${lines.join('\n')}\n`;
+}
+
 function evaluateExecutionCircuitBreaker(alertSnapshot) {
   if (!state.config.failClosedOnCriticalAlerts) {
     return { pass: true, reason: 'disabled', criticalCodes: [] };
@@ -2439,6 +2490,7 @@ module.exports = {
   evaluateRuntimeAlerts,
   getAlertStatus,
   getDashboardSnapshot,
+  getPrometheusMetrics,
   evaluateExecutionCircuitBreaker,
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,

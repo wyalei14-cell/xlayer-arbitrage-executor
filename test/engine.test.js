@@ -28,6 +28,7 @@ const {
   readExecutionLedger,
   getPnlMetrics,
   getDashboardSnapshot,
+  getPrometheusMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
   evaluateExecutionCircuitBreaker,
@@ -537,6 +538,23 @@ test('getDashboardSnapshot exposes recent trade pnl rows for dashboard rendering
   assert.equal(snapshot.recentTrades[0].realizedProfitUsd, 2.4);
   assert.equal(snapshot.recentTrades[1].ts, '2026-04-14T00:01:00.000Z');
   assert.equal(snapshot.metrics.sampleSize, 3);
+});
+
+test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    [
+      JSON.stringify({ ts: new Date().toISOString(), routeType: 'two-pool', success: true, realizedProfitUsd: 2.1, gasCostUsd: 0.1, executionCostUsd: 0.05, mode: 'paper' })
+    ].join('\n') + '\n'
+  );
+
+  const text = getPrometheusMetrics();
+  assert.match(text, /xlayer_arbitrage_realized_pnl_usd/);
+  assert.match(text, /xlayer_arbitrage_execution_rate/);
+  assert.match(text, /xlayer_arbitrage_alerts\{level="critical"\}/);
+  assert.match(text, /xlayer_arbitrage_runtime_signal_age_ms\{stream="ws"\}/);
 });
 
 test('scanOpportunities applies mempool pressure to net profit', () => {

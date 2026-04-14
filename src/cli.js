@@ -15,7 +15,8 @@ const {
   walletLogout,
   getPnlMetrics,
   getAlertStatus,
-  getDashboardSnapshot
+  getDashboardSnapshot,
+  getPrometheusMetrics
 } = require('./engine');
 
 const cmd = process.argv[2] || 'scan';
@@ -80,7 +81,7 @@ th { background: #f8fafc; }
     <tbody>${rows || '<tr><td colspan="7">No trades yet</td></tr>'}</tbody>
   </table>
 </div>
-<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code>, <code>/dashboard-data</code></p>
+<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code>, <code>/dashboard-data</code> | Prometheus: <code>/metrics/prometheus</code></p>
 </body></html>`;
 }
 
@@ -241,6 +242,10 @@ if (cmd === 'api') {
     }
     if (req.url === '/metrics') {
       return res.end(JSON.stringify({ metrics: getPnlMetrics() }));
+    }
+    if (req.url === '/metrics/prometheus') {
+      res.setHeader('content-type', 'text/plain; version=0.0.4; charset=utf-8');
+      return res.end(getPrometheusMetrics());
     }
     if (req.url === '/alerts') {
       return res.end(JSON.stringify({ alerts: getAlertStatus() }));
