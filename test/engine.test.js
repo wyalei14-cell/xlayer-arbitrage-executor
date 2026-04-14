@@ -779,6 +779,7 @@ test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener
     runtimeSignals: {
       ...state.runtimeSignals,
       listenerMode: 'watch',
+      listenersStartedAt: new Date(Date.now() - 120_000).toISOString(),
       wsUpdatedAt: staleIso,
       mempoolUpdatedAt: staleIso
     },
@@ -788,6 +789,31 @@ test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener
   const out = evaluateRuntimeAlerts({ rows: [], metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 }, runtimeState });
   assert.ok(out.alerts.some((a) => a.code === 'ws-signal-stale'));
   assert.ok(out.alerts.some((a) => a.code === 'mempool-signal-stale'));
+});
+
+test('evaluateRuntimeAlerts raises missing streaming signal warnings after bootstrap grace window', () => {
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      enableStreamingSignals: true,
+      streamingBootstrapGraceMs: 5_000,
+      maxWsSignalAgeMs: 10_000,
+      maxMempoolSignalAgeMs: 10_000
+    },
+    runtimeSignals: {
+      ...state.runtimeSignals,
+      listenerMode: 'watch',
+      listenersStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      wsUpdatedAt: null,
+      mempoolUpdatedAt: null
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({ rows: [], metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 }, runtimeState });
+  assert.ok(out.alerts.some((a) => a.code === 'ws-signal-missing'));
+  assert.ok(out.alerts.some((a) => a.code === 'mempool-signal-missing'));
 });
 
 test('staleSignalExecutionGuard blocks execution when streaming overlays are stale', () => {

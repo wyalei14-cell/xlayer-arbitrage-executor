@@ -21,7 +21,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - file-watch fallback listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory when sockets are not configured
   - scanner consumes cached overlays without per-scan file parse
   - stale signal filter drops old websocket/mempool events before routing/profit math (fail-closed freshness)
-  - **execution guard now fail-closes** when websocket/mempool listener timestamps go stale (no auto-fill on old stream state)
+  - **execution guard now fail-closes** when websocket/mempool listener timestamps go stale or never bootstrap fresh updates after grace window (no auto-fill on missing/old stream state)
   - listener health metadata exposed in `runtimeSignals` (`listenerMode`: `socket|watch|poll`, `wsUpdatedAt`, `mempoolUpdatedAt`, stale-drop counters)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
@@ -123,6 +123,7 @@ node src/cli.js wallet-logout
 - `MEMPOOL_WS_URL=wss://...` (optional real-time websocket feed for pending tx overlays; payload supports `[rows]` or `{data:[rows]}`)
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
+- `STREAMING_BOOTSTRAP_GRACE_MS=30000` (fail-closed bootstrap grace window; block execution if websocket/mempool listeners produce no fresh updates after this window)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
 - `ALERT_MAX_PREFLIGHT_LATENCY_MS=2500` (warning threshold for rolling average Wallet→DEX→Security→Gateway preflight latency)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
@@ -150,6 +151,7 @@ Default runtime risk config in `src/engine.js`:
 - `flashLoanMinUsd` (default `250`) marks larger trades as flash-loan-ready in preflight plan
 - `maxWsSignalAgeMs` (default `12000`) freshness window for websocket overlay quotes
 - `maxMempoolSignalAgeMs` (default `15000`) freshness window for mempool pending tx overlays
+- `streamingBootstrapGraceMs` (default `30000`) max listener bootstrap time before missing-stream warnings fail-close execution
 - `alertWindow` (default `20`) rolling sample size for runtime alert checks
 - `alertMaxConsecutiveFailures` (default `5`) critical alert threshold
 - `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5

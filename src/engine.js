@@ -48,6 +48,7 @@ const state = {
     mempoolSocketUrl: process.env.MEMPOOL_WS_URL || '',
     maxWsSignalAgeMs: Number(process.env.MAX_WS_SIGNAL_AGE_MS || 12_000),
     maxMempoolSignalAgeMs: Number(process.env.MAX_MEMPOOL_SIGNAL_AGE_MS || 15_000),
+    streamingBootstrapGraceMs: Number(process.env.STREAMING_BOOTSTRAP_GRACE_MS || 30_000),
     mempoolSlippageBpsPerPendingTx: 2,
     mempoolGasMultiplierPerPendingTx: 0.015,
     maxMempoolGasMultiplier: 2,
@@ -87,6 +88,7 @@ const state = {
     mempoolDroppedStale: 0,
     gasPressureMultiplier: 1,
     listenerMode: 'poll',
+    listenersStartedAt: null,
     wsUpdatedAt: null,
     mempoolUpdatedAt: null
   }
@@ -521,6 +523,7 @@ function resetStreamingSignalCache() {
   streamingCache.mempoolReconnectTimer = null;
   state.runtimeSignals.wsDroppedStale = 0;
   state.runtimeSignals.mempoolDroppedStale = 0;
+  state.runtimeSignals.listenersStartedAt = null;
 }
 
 function resetAlertSnapshotCache() {
@@ -608,6 +611,7 @@ function startStreamingSignalListeners() {
   }
 
   streamingCache.listenersStarted = true;
+  state.runtimeSignals.listenersStartedAt = new Date().toISOString();
 }
 
 function quoteKey(q) {
@@ -730,6 +734,7 @@ function loadMarketSync() {
     listenerMode: (streamingCache.wsSocket || streamingCache.mempoolSocket)
       ? 'socket'
       : (streamingCache.listenersStarted ? 'watch' : 'poll'),
+    listenersStartedAt: state.runtimeSignals.listenersStartedAt,
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
@@ -923,6 +928,7 @@ function scanOpportunitiesFromData({ quotes, pendingTxs = [], source = 'replay',
       1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx
     ).toFixed(4),
     listenerMode: source === 'replay' || source === 'historical' ? 'offline' : state.runtimeSignals.listenerMode,
+    listenersStartedAt: state.runtimeSignals.listenersStartedAt,
     wsUpdatedAt: state.runtimeSignals.wsUpdatedAt,
     mempoolUpdatedAt: state.runtimeSignals.mempoolUpdatedAt
   };
@@ -979,6 +985,7 @@ async function loadMarketAsync() {
     listenerMode: (streamingCache.wsSocket || streamingCache.mempoolSocket)
       ? 'socket'
       : (streamingCache.listenersStarted ? 'watch' : 'poll'),
+    listenersStartedAt: state.runtimeSignals.listenersStartedAt,
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
@@ -1300,6 +1307,9 @@ function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
 
   const wsUpdatedAt = runtimeSignals.wsUpdatedAt ? Date.parse(runtimeSignals.wsUpdatedAt) : NaN;
   const mempoolUpdatedAt = runtimeSignals.mempoolUpdatedAt ? Date.parse(runtimeSignals.mempoolUpdatedAt) : NaN;
+  const listenersStartedAt = runtimeSignals.listenersStartedAt ? Date.parse(runtimeSignals.listenersStartedAt) : NaN;
+  const bootstrapAgeMs = Number.isFinite(listenersStartedAt) ? nowTs - listenersStartedAt : 0;
+  const bootstrapGraceMs = Number(runtimeState.config.streamingBootstrapGraceMs || 0);
 
   const wsStaleAgeMs = Number(runtimeState.config.maxWsSignalAgeMs || 0) * 2;
   if (Number.isFinite(wsUpdatedAt) && wsStaleAgeMs > 0 && nowTs - wsUpdatedAt > wsStaleAgeMs) {
@@ -1309,6 +1319,14 @@ function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
       message: `Websocket quote overlay stale for ${nowTs - wsUpdatedAt}ms`,
       value: nowTs - wsUpdatedAt,
       threshold: wsStaleAgeMs
+    });
+  } else if (!Number.isFinite(wsUpdatedAt) && bootstrapGraceMs > 0 && bootstrapAgeMs > bootstrapGraceMs) {
+    alerts.push({
+      level: 'warning',
+      code: 'ws-signal-missing',
+      message: `Websocket quote overlay has no fresh update after ${bootstrapAgeMs}ms`,
+      value: bootstrapAgeMs,
+      threshold: bootstrapGraceMs
     });
   }
 
@@ -1320,6 +1338,14 @@ function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
       message: `Mempool overlay stale for ${nowTs - mempoolUpdatedAt}ms`,
       value: nowTs - mempoolUpdatedAt,
       threshold: mempoolStaleAgeMs
+    });
+  } else if (!Number.isFinite(mempoolUpdatedAt) && bootstrapGraceMs > 0 && bootstrapAgeMs > bootstrapGraceMs) {
+    alerts.push({
+      level: 'warning',
+      code: 'mempool-signal-missing',
+      message: `Mempool overlay has no fresh update after ${bootstrapAgeMs}ms`,
+      value: bootstrapAgeMs,
+      threshold: bootstrapGraceMs
     });
   }
 
