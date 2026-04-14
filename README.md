@@ -52,6 +52,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
+  - **critical-alert circuit breaker**: autopilot fails closed before execution when critical runtime alerts are active (failure streak, missing live wallet session, high gas pressure)
 - Opportunity + operations API:
   - `GET /opportunities`
   - `GET /metrics` (PnL ledger aggregates + recent execution window)
@@ -112,6 +113,8 @@ node src/cli.js wallet-logout
 - `PORT=8787` (api server)
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
+- `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
+- `FAIL_CLOSED_ON_CRITICAL_ALERTS=true|false` (autopilot execution circuit breaker)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
 
@@ -137,6 +140,8 @@ Default runtime risk config in `src/engine.js`:
 - `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5
 - `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
+- `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
+- `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
 
 ## Data output
 Execution log file:

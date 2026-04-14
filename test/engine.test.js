@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   state,
+  runOnce,
   validateMarket,
   scanOpportunities,
   scanOpportunitiesAsync,
@@ -28,6 +29,7 @@ const {
   getPnlMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
+  evaluateExecutionCircuitBreaker,
   staleSignalExecutionGuard,
   resetStreamingSignalCache
 } = require('../src/engine');
@@ -602,6 +604,29 @@ test('getAlertStatus raises wallet-session-missing in live autopilot mode', () =
   assert.ok(out.alerts.some((a) => a.code === 'wallet-session-missing'));
 });
 
+test('evaluateRuntimeAlerts raises critical high-gas-pressure from runtime signals', () => {
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      alertMaxGasPressureMultiplier: 1.3
+    },
+    runtimeSignals: {
+      ...state.runtimeSignals,
+      gasPressureMultiplier: 1.55
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({
+    rows: [],
+    metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 },
+    runtimeState
+  });
+
+  assert.ok(out.alerts.some((a) => a.code === 'high-gas-pressure' && a.level === 'critical'));
+});
+
 test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener data is old', () => {
   const staleIso = new Date(Date.now() - 60_000).toISOString();
   const runtimeState = {
@@ -694,6 +719,40 @@ test('executeOpportunity fail-closes when streaming overlays become stale', () =
   state.runtimeSignals.wsUpdatedAt = prev.wsUpdatedAt;
   state.runtimeSignals.mempoolUpdatedAt = prev.mempoolUpdatedAt;
   setMode(prev.mode);
+});
+
+test('runOnce fail-closes with execution circuit breaker on critical alerts', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    new Array(5)
+      .fill(null)
+      .map((_, idx) => JSON.stringify({
+        ts: new Date(Date.now() - (5 - idx) * 1000).toISOString(),
+        routeType: 'two-pool',
+        success: false,
+        realizedProfitUsd: 0,
+        netProfitUsd: 3,
+        mode: 'paper'
+      }))
+      .join('\n') + '\n'
+  );
+
+  state.autopilot = true;
+  setMode('paper');
+  const prevMinProfit = state.config.minNetProfitUsd;
+  state.config.minNetProfitUsd = -1;
+
+  const alertSnapshot = getAlertStatus();
+  const circuit = evaluateExecutionCircuitBreaker(alertSnapshot);
+  assert.equal(circuit.pass, false);
+
+  const out = runOnce();
+  assert.equal(out.record.success, false);
+  assert.match(out.record.reason, /execution-circuit-breaker/);
+
+  state.config.minNetProfitUsd = prevMinProfit;
 });
 
 test('runPaperSoak executes requested iterations and restores prior session state', async () => {

@@ -49,7 +49,9 @@ const state = {
     alertMaxConsecutiveFailures: 5,
     alertMinExecutionRate: 0.2,
     alertMinRecentPnlUsd: -5,
-    alertMaxGasCostShare: 0.6
+    alertMaxGasCostShare: 0.6,
+    alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
+    failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true'
   },
   session: {
     mode: 'paper',
@@ -1189,6 +1191,17 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
     });
   }
 
+  const gasPressureMultiplier = Number(runtimeSignals.gasPressureMultiplier || 1);
+  if (gasPressureMultiplier >= Number(runtimeState.config.alertMaxGasPressureMultiplier || Infinity)) {
+    alerts.push({
+      level: 'critical',
+      code: 'high-gas-pressure',
+      message: `Mempool-driven gas pressure reached ${gasPressureMultiplier}`,
+      value: gasPressureMultiplier,
+      threshold: runtimeState.config.alertMaxGasPressureMultiplier
+    });
+  }
+
   if (runtimeState.autopilot && runtimeState.session.mode === 'live' && !runtimeState.session.wallet.loggedIn) {
     alerts.push({
       level: 'critical',
@@ -1225,6 +1238,26 @@ function getAlertStatus() {
   const rows = readExecutionLedger(state.config.alertWindow);
   const metrics = getPnlMetrics({ limit: state.config.alertWindow });
   return evaluateRuntimeAlerts({ rows, metrics, runtimeState: state });
+}
+
+function evaluateExecutionCircuitBreaker(alertSnapshot) {
+  if (!state.config.failClosedOnCriticalAlerts) {
+    return { pass: true, reason: 'disabled', criticalCodes: [] };
+  }
+
+  const criticalCodes = (alertSnapshot?.alerts || [])
+    .filter((a) => a.level === 'critical')
+    .map((a) => a.code);
+
+  if (criticalCodes.length === 0) {
+    return { pass: true, reason: 'ok', criticalCodes: [] };
+  }
+
+  return {
+    pass: false,
+    reason: `execution-circuit-breaker:${criticalCodes.join(',')}`,
+    criticalCodes
+  };
 }
 
 function optimizeFromHistory() {
@@ -1384,7 +1417,19 @@ function runOnce() {
 
   let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
   if (selected.risk.pass && state.autopilot) {
-    if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+    const preExecutionAlerts = getAlertStatus();
+    const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+
+    if (!circuit.pass) {
+      result = {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: circuit.reason,
+        circuitBreaker: circuit,
+        preExecutionAlerts
+      };
+    } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
       result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
     } else {
       result = executeOpportunity(selected.opp);
@@ -1456,7 +1501,19 @@ async function runOnceAsync() {
 
   let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
   if (selected.risk.pass && state.autopilot) {
-    if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+    const preExecutionAlerts = getAlertStatus();
+    const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+
+    if (!circuit.pass) {
+      result = {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: circuit.reason,
+        circuitBreaker: circuit,
+        preExecutionAlerts
+      };
+    } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
       result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
     } else {
       result = executeOpportunity(selected.opp);
@@ -1528,6 +1585,7 @@ module.exports = {
   getPnlMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
+  evaluateExecutionCircuitBreaker,
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
