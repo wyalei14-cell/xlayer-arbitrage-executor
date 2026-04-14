@@ -17,11 +17,12 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - adds pair-level slippage pressure into path scoring
   - raises gas safety estimate during congestion (`runtimeSignals.gasPressureMultiplier`)
 - Streaming listener path (websocket + mempool)
-  - file-watch listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory
+  - supports **real websocket sockets** (`WS_QUOTES_URL`, `MEMPOOL_WS_URL`) with auto-reconnect for event-driven quote/mempool ingestion
+  - file-watch fallback listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory when sockets are not configured
   - scanner consumes cached overlays without per-scan file parse
   - stale signal filter drops old websocket/mempool events before routing/profit math (fail-closed freshness)
   - **execution guard now fail-closes** when websocket/mempool listener timestamps go stale (no auto-fill on old stream state)
-  - listener health metadata exposed in `runtimeSignals` (`listenerMode`, `wsUpdatedAt`, `mempoolUpdatedAt`, stale-drop counters)
+  - listener health metadata exposed in `runtimeSignals` (`listenerMode`: `socket|watch|poll`, `wsUpdatedAt`, `mempoolUpdatedAt`, stale-drop counters)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
@@ -112,6 +113,8 @@ node src/cli.js wallet-logout
 - `SOAK_INTERVAL_MS=1000` (delay between soak runs)
 - `SOAK_STOP_ON_CRITICAL=true|false` (stop soak early on critical alerts)
 - `PORT=8787` (api server)
+- `WS_QUOTES_URL=wss://...` (optional real-time websocket feed for quote overlays; message payload supports `[rows]` or `{data:[rows]}`)
+- `MEMPOOL_WS_URL=wss://...` (optional real-time websocket feed for pending tx overlays; payload supports `[rows]` or `{data:[rows]}`)
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)

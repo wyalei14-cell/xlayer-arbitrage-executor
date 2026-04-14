@@ -9,7 +9,11 @@ const streamingCache = {
   wsQuotes: [],
   pendingTxs: [],
   wsUpdatedAt: null,
-  mempoolUpdatedAt: null
+  mempoolUpdatedAt: null,
+  wsSocket: null,
+  mempoolSocket: null,
+  wsReconnectTimer: null,
+  mempoolReconnectTimer: null
 };
 
 const alertCache = {
@@ -40,6 +44,8 @@ const state = {
     enableStreamingSignals: true,
     wsQuoteFile: path.join(process.cwd(), 'data', 'ws-quotes.json'),
     mempoolFile: path.join(process.cwd(), 'data', 'mempool.json'),
+    wsQuoteSocketUrl: process.env.WS_QUOTES_URL || '',
+    mempoolSocketUrl: process.env.MEMPOOL_WS_URL || '',
     maxWsSignalAgeMs: Number(process.env.MAX_WS_SIGNAL_AGE_MS || 12_000),
     maxMempoolSignalAgeMs: Number(process.env.MAX_MEMPOOL_SIGNAL_AGE_MS || 15_000),
     mempoolSlippageBpsPerPendingTx: 2,
@@ -415,6 +421,46 @@ function filterStaleSignals(rows, maxAgeMs) {
   return { rows: out, dropped };
 }
 
+function parseRealtimePayload(raw) {
+  let parsed = null;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (_) {
+    return [];
+  }
+
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== 'object') return [];
+  if (Array.isArray(parsed.data)) return parsed.data;
+  if (parsed.data && typeof parsed.data === 'object') return [parsed.data];
+  return [parsed];
+}
+
+function normalizeQuoteRows(rows) {
+  return rows
+    .map((row) => ({
+      dex: row.dex,
+      base: row.base,
+      quote: row.quote,
+      price: Number(row.price),
+      feePct: Number(row.feePct),
+      slippagePct: Number(row.slippagePct),
+      liqUsd: Number(row.liqUsd),
+      ts: Number(row.ts || now())
+    }))
+    .filter((row) => row.dex && row.base && row.quote && row.price > 0 && row.liqUsd > 0);
+}
+
+function normalizeMempoolRows(rows) {
+  return rows
+    .map((row) => ({
+      tokenIn: row.tokenIn || row.base,
+      tokenOut: row.tokenOut || row.quote,
+      ts: Number(row.ts || now())
+    }))
+    .filter((row) => row.tokenIn && row.tokenOut);
+}
+
 function refreshStreamingOverlay() {
   const wsRaw = readArrayFileSafe(state.config.wsQuoteFile);
   const mempoolRaw = readArrayFileSafe(state.config.mempoolFile);
@@ -422,10 +468,15 @@ function refreshStreamingOverlay() {
   const ws = filterStaleSignals(wsRaw, state.config.maxWsSignalAgeMs);
   const mempool = filterStaleSignals(mempoolRaw, state.config.maxMempoolSignalAgeMs);
 
-  streamingCache.wsQuotes = ws.rows;
-  streamingCache.pendingTxs = mempool.rows;
-  streamingCache.wsUpdatedAt = new Date().toISOString();
-  streamingCache.mempoolUpdatedAt = new Date().toISOString();
+  if (ws.rows.length || !streamingCache.wsQuotes.length) {
+    streamingCache.wsQuotes = ws.rows;
+    streamingCache.wsUpdatedAt = new Date().toISOString();
+  }
+
+  if (mempool.rows.length || !streamingCache.pendingTxs.length) {
+    streamingCache.pendingTxs = mempool.rows;
+    streamingCache.mempoolUpdatedAt = new Date().toISOString();
+  }
 
   state.runtimeSignals.wsDroppedStale = ws.dropped;
   state.runtimeSignals.mempoolDroppedStale = mempool.dropped;
@@ -436,15 +487,33 @@ function reloadStreamingCacheFromFiles() {
   streamingCache.initialized = true;
 }
 
+function closeSocket(socket) {
+  if (!socket) return;
+  try {
+    socket.close();
+  } catch (_) {
+    // ignore close failures
+  }
+}
+
 function resetStreamingSignalCache() {
   fs.unwatchFile(state.config.wsQuoteFile);
   fs.unwatchFile(state.config.mempoolFile);
+  if (streamingCache.wsReconnectTimer) clearTimeout(streamingCache.wsReconnectTimer);
+  if (streamingCache.mempoolReconnectTimer) clearTimeout(streamingCache.mempoolReconnectTimer);
+  closeSocket(streamingCache.wsSocket);
+  closeSocket(streamingCache.mempoolSocket);
+
   streamingCache.initialized = false;
   streamingCache.listenersStarted = false;
   streamingCache.wsQuotes = [];
   streamingCache.pendingTxs = [];
   streamingCache.wsUpdatedAt = null;
   streamingCache.mempoolUpdatedAt = null;
+  streamingCache.wsSocket = null;
+  streamingCache.mempoolSocket = null;
+  streamingCache.wsReconnectTimer = null;
+  streamingCache.mempoolReconnectTimer = null;
   state.runtimeSignals.wsDroppedStale = 0;
   state.runtimeSignals.mempoolDroppedStale = 0;
 }
@@ -454,19 +523,84 @@ function resetAlertSnapshotCache() {
   alertCache.lastTs = 0;
 }
 
+function scheduleSocketReconnect(kind, connectFn) {
+  const key = kind === 'ws' ? 'wsReconnectTimer' : 'mempoolReconnectTimer';
+  if (streamingCache[key]) clearTimeout(streamingCache[key]);
+  streamingCache[key] = setTimeout(() => {
+    streamingCache[key] = null;
+    connectFn();
+  }, 2000);
+}
+
+function startSocketListener({ kind, url, onRows }) {
+  if (!url || typeof WebSocket === 'undefined') return false;
+
+  const socketKey = kind === 'ws' ? 'wsSocket' : 'mempoolSocket';
+  const connect = () => {
+    const socket = new WebSocket(url);
+    streamingCache[socketKey] = socket;
+
+    socket.addEventListener('message', (event) => {
+      const rows = onRows(parseRealtimePayload(event.data));
+      if (rows.length === 0) return;
+      const filtered = filterStaleSignals(
+        rows,
+        kind === 'ws' ? state.config.maxWsSignalAgeMs : state.config.maxMempoolSignalAgeMs
+      );
+
+      if (kind === 'ws') {
+        streamingCache.wsQuotes = filtered.rows;
+        streamingCache.wsUpdatedAt = new Date().toISOString();
+        state.runtimeSignals.wsDroppedStale = (state.runtimeSignals.wsDroppedStale || 0) + filtered.dropped;
+      } else {
+        streamingCache.pendingTxs = filtered.rows;
+        streamingCache.mempoolUpdatedAt = new Date().toISOString();
+        state.runtimeSignals.mempoolDroppedStale = (state.runtimeSignals.mempoolDroppedStale || 0) + filtered.dropped;
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      if (streamingCache.listenersStarted) scheduleSocketReconnect(kind, connect);
+    });
+
+    socket.addEventListener('error', () => {
+      closeSocket(socket);
+    });
+  };
+
+  connect();
+  return true;
+}
+
 function startStreamingSignalListeners() {
   if (!state.config.enableStreamingSignals || streamingCache.listenersStarted) return;
 
   fs.mkdirSync(path.dirname(state.config.wsQuoteFile), { recursive: true });
   reloadStreamingCacheFromFiles();
 
-  fs.watchFile(state.config.wsQuoteFile, { interval: 1000, persistent: false }, () => {
-    refreshStreamingOverlay();
+  const wsSocketActive = startSocketListener({
+    kind: 'ws',
+    url: state.config.wsQuoteSocketUrl,
+    onRows: normalizeQuoteRows
   });
 
-  fs.watchFile(state.config.mempoolFile, { interval: 1000, persistent: false }, () => {
-    refreshStreamingOverlay();
+  const mempoolSocketActive = startSocketListener({
+    kind: 'mempool',
+    url: state.config.mempoolSocketUrl,
+    onRows: normalizeMempoolRows
   });
+
+  if (!wsSocketActive) {
+    fs.watchFile(state.config.wsQuoteFile, { interval: 1000, persistent: false }, () => {
+      refreshStreamingOverlay();
+    });
+  }
+
+  if (!mempoolSocketActive) {
+    fs.watchFile(state.config.mempoolFile, { interval: 1000, persistent: false }, () => {
+      refreshStreamingOverlay();
+    });
+  }
 
   streamingCache.listenersStarted = true;
 }
@@ -588,7 +722,9 @@ function loadMarketSync() {
     wsDroppedStale: state.runtimeSignals.wsDroppedStale || 0,
     mempoolDroppedStale: state.runtimeSignals.mempoolDroppedStale || 0,
     gasPressureMultiplier: +gasPressureMultiplier.toFixed(4),
-    listenerMode: streamingCache.listenersStarted ? 'watch' : 'poll',
+    listenerMode: (streamingCache.wsSocket || streamingCache.mempoolSocket)
+      ? 'socket'
+      : (streamingCache.listenersStarted ? 'watch' : 'poll'),
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
@@ -827,7 +963,9 @@ async function loadMarketAsync() {
     wsDroppedStale: state.runtimeSignals.wsDroppedStale || 0,
     mempoolDroppedStale: state.runtimeSignals.mempoolDroppedStale || 0,
     gasPressureMultiplier: +gasPressureMultiplier.toFixed(4),
-    listenerMode: streamingCache.listenersStarted ? 'watch' : 'poll',
+    listenerMode: (streamingCache.wsSocket || streamingCache.mempoolSocket)
+      ? 'socket'
+      : (streamingCache.listenersStarted ? 'watch' : 'poll'),
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
@@ -1115,7 +1253,7 @@ function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
   const runtimeSignals = runtimeState.runtimeSignals || {};
   const alerts = [];
 
-  if (!(runtimeState.config.enableStreamingSignals && runtimeSignals.listenerMode === 'watch')) {
+  if (!(runtimeState.config.enableStreamingSignals && ['watch', 'socket'].includes(runtimeSignals.listenerMode))) {
     return alerts;
   }
 
