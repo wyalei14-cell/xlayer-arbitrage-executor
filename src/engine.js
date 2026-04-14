@@ -1963,6 +1963,8 @@ function getPrometheusMetrics() {
   const criticalAlerts = (alertStatus.alerts || []).filter((a) => a.level === 'critical').length;
   const warningAlerts = (alertStatus.alerts || []).filter((a) => a.level === 'warning').length;
   const runtimeSignals = state.runtimeSignals || {};
+  const alertStats = alertStatus.stats || {};
+  const executionLockActive = runtimeSignals.executionLockActive ? 1 : 0;
 
   const lines = [
     '# HELP xlayer_arbitrage_realized_pnl_usd Total realized pnl in USD from execution ledger.',
@@ -2002,7 +2004,23 @@ function getPrometheusMetrics() {
     '# HELP xlayer_arbitrage_runtime_signal_age_ms Runtime websocket/mempool signal age in ms.',
     '# TYPE xlayer_arbitrage_runtime_signal_age_ms gauge',
     `xlayer_arbitrage_runtime_signal_age_ms{stream="ws"} ${Number(runtimeSignals.wsSignalAgeMs || 0)}`,
-    `xlayer_arbitrage_runtime_signal_age_ms{stream="mempool"} ${Number(runtimeSignals.mempoolSignalAgeMs || 0)}`
+    `xlayer_arbitrage_runtime_signal_age_ms{stream="mempool"} ${Number(runtimeSignals.mempoolSignalAgeMs || 0)}`,
+    '# HELP xlayer_arbitrage_runtime_signal_dropped_total Dropped stale realtime overlay events by stream.',
+    '# TYPE xlayer_arbitrage_runtime_signal_dropped_total counter',
+    `xlayer_arbitrage_runtime_signal_dropped_total{stream="ws"} ${Number(runtimeSignals.wsDroppedStale || 0)}`,
+    `xlayer_arbitrage_runtime_signal_dropped_total{stream="mempool"} ${Number(runtimeSignals.mempoolDroppedStale || 0)}`,
+    '# HELP xlayer_arbitrage_gas_pressure_multiplier Mempool-driven gas pressure multiplier.',
+    '# TYPE xlayer_arbitrage_gas_pressure_multiplier gauge',
+    `xlayer_arbitrage_gas_pressure_multiplier ${Number(runtimeSignals.gasPressureMultiplier || 1)}`,
+    '# HELP xlayer_arbitrage_preflight_latency_ms_avg Rolling average Wallet->DEX->Security->Gateway preflight latency.',
+    '# TYPE xlayer_arbitrage_preflight_latency_ms_avg gauge',
+    `xlayer_arbitrage_preflight_latency_ms_avg ${Number(alertStats.avgPreflightLatencyMs || 0)}`,
+    '# HELP xlayer_arbitrage_execution_lock_active Execution lock state (1 active, 0 inactive).',
+    '# TYPE xlayer_arbitrage_execution_lock_active gauge',
+    `xlayer_arbitrage_execution_lock_active ${executionLockActive}`,
+    '# HELP xlayer_arbitrage_execution_lock_age_ms Execution lock age in ms.',
+    '# TYPE xlayer_arbitrage_execution_lock_age_ms gauge',
+    `xlayer_arbitrage_execution_lock_age_ms ${Number(runtimeSignals.executionLockAgeMs || 0)}`
   ];
 
   return `${lines.join('\n')}\n`;

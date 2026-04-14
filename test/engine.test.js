@@ -555,6 +555,10 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
   assert.match(text, /xlayer_arbitrage_execution_rate/);
   assert.match(text, /xlayer_arbitrage_alerts\{level="critical"\}/);
   assert.match(text, /xlayer_arbitrage_runtime_signal_age_ms\{stream="ws"\}/);
+  assert.match(text, /xlayer_arbitrage_runtime_signal_dropped_total\{stream="ws"\}/);
+  assert.match(text, /xlayer_arbitrage_gas_pressure_multiplier/);
+  assert.match(text, /xlayer_arbitrage_preflight_latency_ms_avg/);
+  assert.match(text, /xlayer_arbitrage_execution_lock_active/);
 });
 
 test('getPrometheusMetrics reports non-zero runtime signal age when updates are old', () => {
