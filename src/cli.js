@@ -4,9 +4,11 @@ const path = require('path');
 const {
   state,
   runOnce,
+  runOnceAsync,
   runReplayBacktest,
   runPaperSoak,
   scanOpportunities,
+  scanOpportunitiesAsync,
   setAutopilot,
   setMode,
   walletLogin,
@@ -55,20 +57,33 @@ code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
 }
 
 if (cmd === 'scan') {
-  console.log(JSON.stringify(runOnce(), null, 2));
-  process.exit(0);
+  runOnceAsync()
+    .then((out) => {
+      console.log(JSON.stringify(out, null, 2));
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(`scan failed: ${err.message}`);
+      process.exit(1);
+    });
+  return;
 }
 
 if (cmd === 'autopilot') {
   setAutopilot(String(process.env.AUTOPILOT || 'true') === 'true');
   console.log(`autopilot=${state.autopilot}, mode=${state.session.mode}, interval=${state.config.scanIntervalMs}ms`);
 
-  const loop = () => {
-    const out = runOnce();
-    console.log(
-      `[${new Date().toISOString()}] best=${out.record.routeType} net=${out.record.netProfitUsd} executed=${out.record.success} mode=${out.record.mode} reason=${out.record.reason}`
-    );
-    setTimeout(loop, state.config.scanIntervalMs);
+  const loop = async () => {
+    try {
+      const out = await runOnceAsync();
+      console.log(
+        `[${new Date().toISOString()}] best=${out.record.routeType} net=${out.record.netProfitUsd} executed=${out.record.success} mode=${out.record.mode} reason=${out.record.reason}`
+      );
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] scan failed: ${err.message}`);
+    } finally {
+      setTimeout(loop, state.config.scanIntervalMs);
+    }
   };
 
   loop();
@@ -162,11 +177,17 @@ if (cmd === 'soak') {
 
 if (cmd === 'api') {
   const port = Number(process.env.PORT || 8787);
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json');
 
     if (req.url === '/opportunities') {
-      return res.end(JSON.stringify({ data: scanOpportunities() }));
+      try {
+        const data = await scanOpportunitiesAsync();
+        return res.end(JSON.stringify({ data }));
+      } catch (err) {
+        res.statusCode = 500;
+        return res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
     }
     if (req.url === '/control/autopilot/on') {
       setAutopilot(true);

@@ -11,6 +11,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - `mock` adapter for local development
   - optional websocket quote overlay via `data/ws-quotes.json` (event-driven snapshot merge)
   - `live` adapter contract (via `QUOTE_ADAPTER_URL`) for OnchainOS-compatible quote service integration
+  - async scan/autopilot/API opportunity endpoint path now supports `QUOTE_ADAPTER=live` with the same websocket+mempool overlay + net-profit gating flow
 - Mempool-aware execution pressure
   - optional pending tx feed via `data/mempool.json`
   - adds pair-level slippage pressure into path scoring

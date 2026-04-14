@@ -779,6 +779,59 @@ function scanOpportunities() {
   });
 }
 
+async function loadMarketAsync() {
+  const mode = String(process.env.QUOTE_ADAPTER || 'mock').toLowerCase();
+
+  if (mode === 'mock') {
+    return loadMarketSync();
+  }
+
+  if (mode !== 'live') {
+    throw new Error(`unsupported QUOTE_ADAPTER=${mode}`);
+  }
+
+  let quotes = await liveMarket();
+  let wsQuotes = [];
+  let pendingTxs = [];
+
+  if (state.config.enableStreamingSignals) {
+    startStreamingSignalListeners();
+    if (!streamingCache.initialized) reloadStreamingCacheFromFiles();
+    wsQuotes = streamingCache.wsQuotes;
+    pendingTxs = streamingCache.pendingTxs;
+    quotes = mergeQuotes(quotes, wsQuotes);
+  }
+
+  const gasPressureMultiplier = Math.min(
+    state.config.maxMempoolGasMultiplier,
+    1 + pendingTxs.length * state.config.mempoolGasMultiplierPerPendingTx
+  );
+
+  state.runtimeSignals = {
+    quoteSource: wsQuotes.length ? 'live+ws' : 'live',
+    wsQuoteCount: wsQuotes.length,
+    pendingMempoolTxs: pendingTxs.length,
+    wsDroppedStale: state.runtimeSignals.wsDroppedStale || 0,
+    mempoolDroppedStale: state.runtimeSignals.mempoolDroppedStale || 0,
+    gasPressureMultiplier: +gasPressureMultiplier.toFixed(4),
+    listenerMode: streamingCache.listenersStarted ? 'watch' : 'poll',
+    wsUpdatedAt: streamingCache.wsUpdatedAt,
+    mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
+  };
+
+  return { quotes, pendingTxs };
+}
+
+async function scanOpportunitiesAsync() {
+  const { quotes, pendingTxs } = await loadMarketAsync();
+  return scanOpportunitiesFromData({
+    quotes,
+    pendingTxs,
+    source: state.runtimeSignals.quoteSource,
+    wsQuoteCount: state.runtimeSignals.wsQuoteCount
+  });
+}
+
 function riskCheck(opp) {
   if (!opp) return { pass: false, reason: 'no-opportunity' };
   if (state.config.denyTokens.some((t) => opp.path.join('|').includes(t))) return { pass: false, reason: 'deny-token' };
@@ -1225,7 +1278,7 @@ async function runPaperSoak({ iterations = 20, intervalMs = 1000, stopOnCritical
 
   const runs = [];
   for (let i = 0; i < targetIterations; i++) {
-    const out = runOnce();
+    const out = await runOnceAsync();
     runs.push({
       index: i + 1,
       ts: out.record.ts,
@@ -1334,14 +1387,88 @@ function runOnce() {
   return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
 }
 
+async function runOnceAsync() {
+  let opportunities = [];
+  let selected = null;
+
+  try {
+    opportunities = await scanOpportunitiesAsync();
+    const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
+    const routePlan = buildBestPathPlan(assessed);
+    selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
+  } catch (err) {
+    const failRecord = {
+      ts: new Date().toISOString(),
+      routeType: 'none',
+      path: [],
+      quoteSnapshot: null,
+      grossProfitUsd: 0,
+      feeUsd: 0,
+      slippageUsd: 0,
+      netProfitUsd: 0,
+      txHash: null,
+      success: false,
+      realizedProfitUsd: 0,
+      mode: state.session.mode,
+      reason: `scan-error:${err.message}`
+    };
+    appendRecord(failRecord);
+    const alerts = getAlertStatus();
+    appendAlertSnapshot(alerts);
+    return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
+  }
+
+  let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
+  if (selected.risk.pass && state.autopilot) {
+    if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+      result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
+    } else {
+      result = executeOpportunity(selected.opp);
+    }
+  }
+
+  const record = {
+    ts: new Date().toISOString(),
+    routeType: selected.opp?.type || 'none',
+    path: selected.opp?.path || [],
+    quoteSnapshot: selected.opp?.legs || null,
+    grossProfitUsd: selected.opp?.grossProfitUsd || 0,
+    feeUsd: selected.opp?.feeUsd || 0,
+    slippageUsd: selected.opp?.slippageUsd || 0,
+    netProfitUsd: selected.opp?.netProfitUsd || 0,
+    routingScoreUsd: selected.routing?.routingScoreUsd || 0,
+    routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
+    routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
+    gasCostUsd: result.gasCostUsd || 0,
+    executionCostUsd: result.executionCostUsd || 0,
+    netAfterGasUsd: result.netAfterGasUsd || 0,
+    netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
+    tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
+    consideredCount: opportunities.length,
+    mode: state.session.mode,
+    walletAddress: state.session.wallet.address,
+    onchainPreflight: result.preflight || null,
+    runtimeSignals: state.runtimeSignals,
+    ...result
+  };
+  appendRecord(record);
+  optimizeFromHistory();
+  const alerts = getAlertStatus();
+  appendAlertSnapshot(alerts);
+
+  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
+}
+
 loadRuntimeState();
 
 module.exports = {
   state,
   runOnce,
+  runOnceAsync,
   runReplayBacktest,
   runPaperSoak,
   scanOpportunities,
+  scanOpportunitiesAsync,
   scanOpportunitiesFromData,
   optimizeFromHistory,
   validateMarket,

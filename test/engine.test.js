@@ -6,6 +6,7 @@ const {
   state,
   validateMarket,
   scanOpportunities,
+  scanOpportunitiesAsync,
   scanOpportunitiesFromData,
   runReplayBacktest,
   runPaperSoak,
@@ -489,6 +490,37 @@ test('scanOpportunities drops stale websocket and mempool signals', () => {
   assert.equal(state.runtimeSignals.pendingMempoolTxs, 0);
   assert.ok(state.runtimeSignals.wsDroppedStale >= 1);
   assert.ok(state.runtimeSignals.mempoolDroppedStale >= 1);
+});
+
+test('scanOpportunitiesAsync supports live quote adapter path', async () => {
+  const prevAdapter = process.env.QUOTE_ADAPTER;
+  const prevUrl = process.env.QUOTE_ADAPTER_URL;
+  const prevFetch = global.fetch;
+
+  try {
+    process.env.QUOTE_ADAPTER = 'live';
+    process.env.QUOTE_ADAPTER_URL = 'https://quotes.test/live';
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => {
+        const ts = Date.now();
+        return [
+          { dex: 'LiveA', base: 'USDC', quote: 'OKB', price: 1.0, feePct: 0.2, slippagePct: 0.1, liqUsd: 220000, ts },
+          { dex: 'LiveB', base: 'USDC', quote: 'OKB', price: 1.03, feePct: 0.2, slippagePct: 0.1, liqUsd: 220000, ts }
+        ];
+      }
+    });
+
+    const out = await scanOpportunitiesAsync();
+    assert.ok(out.length > 0);
+    assert.equal(state.runtimeSignals.quoteSource, 'live');
+  } finally {
+    if (prevAdapter === undefined) delete process.env.QUOTE_ADAPTER;
+    else process.env.QUOTE_ADAPTER = prevAdapter;
+    if (prevUrl === undefined) delete process.env.QUOTE_ADAPTER_URL;
+    else process.env.QUOTE_ADAPTER_URL = prevUrl;
+    global.fetch = prevFetch;
+  }
 });
 
 test('scanOpportunitiesFromData applies replay source and mempool gas pressure', () => {
