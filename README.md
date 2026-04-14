@@ -61,6 +61,10 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - `GET /alerts` (runtime health alerts: failure streak, low execution rate, gas pressure, missing wallet session, stale websocket/mempool listener data)
   - `GET /dashboard` (lightweight HTML dashboard with recent trade PnL table)
   - `GET /dashboard-data` (dashboard JSON payload: metrics + alerts + recent trades)
+- Alert escalation hooks:
+  - optional webhook delivery for warning/critical alert snapshots (`ALERT_NOTIFY_WEBHOOK_URL`)
+  - dedupe-aware delivery (same signature uses `alertDedupWindowMs` suppression)
+  - non-blocking delivery with timeout + error telemetry (`data/alert-notify-errors.jsonl`)
   - `GET /config`
   - `GET /session`
   - `GET /healthz`
@@ -122,6 +126,9 @@ node src/cli.js wallet-logout
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
 - `ALERT_MAX_PREFLIGHT_LATENCY_MS=2500` (warning threshold for rolling average Wallet→DEX→Security→Gateway preflight latency)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
+- `ALERT_NOTIFY_WEBHOOK_URL=https://...` (optional monitoring webhook receiver for alert escalations)
+- `ALERT_NOTIFY_MIN_LEVEL=critical|warning|info` (minimum level sent to webhook; default `critical`)
+- `ALERT_NOTIFY_TIMEOUT_MS=3000` (webhook delivery timeout, non-blocking)
 - `FAIL_CLOSED_ON_CRITICAL_ALERTS=true|false` (autopilot execution circuit breaker)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
@@ -152,6 +159,9 @@ Default runtime risk config in `src/engine.js`:
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
 - `alertMaxPreflightLatencyMs` (default `2500`) warning alert when recent average preflight latency is degraded
 - `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window
+- `alertNotifyWebhookUrl` (default empty) optional webhook endpoint for alert escalation delivery
+- `alertNotifyMinLevel` (default `critical`) escalation threshold for webhook notifications
+- `alertNotifyTimeoutMs` (default `3000`) webhook timeout; delivery is non-blocking
 - `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
 
 ## Data output
@@ -163,6 +173,9 @@ Preflight trace log file:
 
 Alert log file:
 - `data/alerts.jsonl` (appends active alert snapshots; duplicate signatures are deduplicated within `alertDedupWindowMs`)
+
+Alert webhook error log file:
+- `data/alert-notify-errors.jsonl` (delivery failures/timeouts/non-2xx responses for external alert webhooks)
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)

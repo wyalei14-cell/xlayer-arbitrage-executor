@@ -34,7 +34,8 @@ const {
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
   resetStreamingSignalCache,
-  resetAlertSnapshotCache
+  resetAlertSnapshotCache,
+  shouldNotifyAlertSnapshot
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
@@ -938,5 +939,44 @@ test('appendAlertSnapshot deduplicates repeated alert signatures inside dedup wi
   const lines = fs.readFileSync(alertsFile, 'utf8').trim().split('\n').filter(Boolean);
   assert.equal(lines.length, 1);
 
+  state.config.alertDedupWindowMs = prevDedup;
+});
+
+test('critical alerts can notify webhook once per deduplicated snapshot', async () => {
+  const prevFetch = global.fetch;
+  const prevWebhook = state.config.alertNotifyWebhookUrl;
+  const prevMinLevel = state.config.alertNotifyMinLevel;
+  const prevDedup = state.config.alertDedupWindowMs;
+
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200 };
+  };
+
+  state.config.alertNotifyWebhookUrl = 'https://alerts.test/webhook';
+  state.config.alertNotifyMinLevel = 'critical';
+  state.config.alertDedupWindowMs = 60_000;
+
+  state.autopilot = true;
+  setMode('live');
+  walletLogout();
+
+  const alertSnapshot = getAlertStatus();
+  assert.equal(shouldNotifyAlertSnapshot(alertSnapshot), true);
+
+  runOnce();
+  runOnce();
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://alerts.test/webhook');
+  const payload = JSON.parse(calls[0].options.body);
+  assert.ok(payload.alerts.some((a) => a.code === 'wallet-session-missing'));
+
+  global.fetch = prevFetch;
+  state.config.alertNotifyWebhookUrl = prevWebhook;
+  state.config.alertNotifyMinLevel = prevMinLevel;
   state.config.alertDedupWindowMs = prevDedup;
 });

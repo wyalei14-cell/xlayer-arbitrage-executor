@@ -65,7 +65,10 @@ const state = {
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
     alertMaxPreflightLatencyMs: Number(process.env.ALERT_MAX_PREFLIGHT_LATENCY_MS || 2_500),
     alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
-    failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true'
+    failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true',
+    alertNotifyWebhookUrl: process.env.ALERT_NOTIFY_WEBHOOK_URL || '',
+    alertNotifyMinLevel: String(process.env.ALERT_NOTIFY_MIN_LEVEL || 'critical').toLowerCase(),
+    alertNotifyTimeoutMs: Number(process.env.ALERT_NOTIFY_TIMEOUT_MS || 3000)
   },
   session: {
     mode: 'paper',
@@ -1438,6 +1441,76 @@ function alertSnapshotSignature(snapshot) {
   return alerts.join('|');
 }
 
+function alertLevelRank(level) {
+  const order = { info: 1, warning: 2, critical: 3 };
+  return order[String(level || '').toLowerCase()] || 0;
+}
+
+function shouldNotifyAlertSnapshot(snapshot, runtimeState = state) {
+  const webhookUrl = String(runtimeState.config.alertNotifyWebhookUrl || '').trim();
+  if (!webhookUrl) return false;
+
+  const minRank = alertLevelRank(runtimeState.config.alertNotifyMinLevel || 'critical');
+  return (snapshot?.alerts || []).some((alert) => alertLevelRank(alert.level) >= minRank);
+}
+
+function appendAlertNotifyError(payload) {
+  const file = path.join(process.cwd(), 'data', 'alert-notify-errors.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(payload) + '\n');
+}
+
+function notifyAlertWebhook(snapshot, runtimeState = state) {
+  if (!shouldNotifyAlertSnapshot(snapshot, runtimeState)) return;
+  if (typeof fetch !== 'function') return;
+
+  const webhookUrl = String(runtimeState.config.alertNotifyWebhookUrl || '').trim();
+  const timeoutMs = Math.max(250, Number(runtimeState.config.alertNotifyTimeoutMs || 3000));
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  const payload = {
+    ts: snapshot.ts,
+    source: 'xlayer-arbitrage-executor',
+    mode: runtimeState.session.mode,
+    autopilot: runtimeState.autopilot,
+    walletAddress: runtimeState.session.wallet.address,
+    alerts: snapshot.alerts,
+    stats: snapshot.stats,
+    runtimeSignals: runtimeState.runtimeSignals
+  };
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: controller ? controller.signal : undefined
+  })
+    .then((res) => {
+      if (!res.ok) {
+        appendAlertNotifyError({
+          ts: new Date().toISOString(),
+          type: 'webhook-http-error',
+          status: res.status,
+          webhookUrl,
+          alertSignature: alertSnapshotSignature(snapshot)
+        });
+      }
+    })
+    .catch((err) => {
+      appendAlertNotifyError({
+        ts: new Date().toISOString(),
+        type: 'webhook-delivery-error',
+        message: err.message,
+        webhookUrl,
+        alertSignature: alertSnapshotSignature(snapshot)
+      });
+    })
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+}
+
 function appendAlertSnapshot(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.alerts) || snapshot.alerts.length === 0) return;
 
@@ -1456,6 +1529,8 @@ function appendAlertSnapshot(snapshot) {
 
   alertCache.lastSignature = signature;
   alertCache.lastTs = ts;
+
+  notifyAlertWebhook(snapshot);
 }
 
 function getAlertStatus() {
@@ -1851,6 +1926,7 @@ module.exports = {
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
   resetStreamingSignalCache,
-  resetAlertSnapshotCache
+  resetAlertSnapshotCache,
+  shouldNotifyAlertSnapshot
 };
 
