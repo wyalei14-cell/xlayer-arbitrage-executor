@@ -1240,6 +1240,42 @@ function getAlertStatus() {
   return evaluateRuntimeAlerts({ rows, metrics, runtimeState: state });
 }
 
+function getDashboardSnapshot({ tradeLimit = 10, ledgerLimit = 200 } = {}) {
+  const metrics = getPnlMetrics({ limit: ledgerLimit });
+  const alerts = evaluateRuntimeAlerts({
+    rows: readExecutionLedger(state.config.alertWindow),
+    metrics: getPnlMetrics({ limit: state.config.alertWindow }),
+    runtimeState: state
+  });
+
+  const recentTrades = (metrics.recent || [])
+    .slice(-Math.max(1, Number(tradeLimit) || 1))
+    .reverse()
+    .map((row) => ({
+      ts: row.ts,
+      mode: row.mode,
+      routeType: row.routeType,
+      success: Boolean(row.success),
+      reason: row.reason,
+      realizedProfitUsd: +(row.realizedProfitUsd || 0).toFixed(4),
+      netAfterAllCostsUsd: +(row.netAfterAllCostsUsd || 0).toFixed(4),
+      txHash: row.txHash || null
+    }));
+
+  return {
+    ts: new Date().toISOString(),
+    metrics,
+    alerts,
+    session: {
+      autopilot: state.autopilot,
+      mode: state.session.mode,
+      wallet: state.session.wallet
+    },
+    runtimeSignals: state.runtimeSignals,
+    recentTrades
+  };
+}
+
 function evaluateExecutionCircuitBreaker(alertSnapshot) {
   if (!state.config.failClosedOnCriticalAlerts) {
     return { pass: true, reason: 'disabled', criticalCodes: [] };
@@ -1585,6 +1621,7 @@ module.exports = {
   getPnlMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
+  getDashboardSnapshot,
   evaluateExecutionCircuitBreaker,
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,

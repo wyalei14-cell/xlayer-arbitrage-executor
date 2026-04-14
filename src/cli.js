@@ -14,14 +14,30 @@ const {
   walletLogin,
   walletLogout,
   getPnlMetrics,
-  getAlertStatus
+  getAlertStatus,
+  getDashboardSnapshot
 } = require('./engine');
 
 const cmd = process.argv[2] || 'scan';
 
-function renderDashboard(metrics) {
+function renderDashboard(snapshot) {
+  const metrics = snapshot.metrics;
   const last = metrics.lastRecord;
-  const alertStatus = getAlertStatus();
+  const alertStatus = snapshot.alerts;
+  const rows = (snapshot.recentTrades || [])
+    .map(
+      (row) => `<tr>
+<td>${row.ts || '-'}</td>
+<td>${row.mode || '-'}</td>
+<td>${row.routeType || '-'}</td>
+<td>${row.success ? 'yes' : 'no'}</td>
+<td>$${row.realizedProfitUsd}</td>
+<td>$${row.netAfterAllCostsUsd}</td>
+<td>${row.reason || '-'}</td>
+</tr>`
+    )
+    .join('');
+
   return `<!doctype html>
 <html><head><meta charset="utf-8" />
 <title>XLayer Arbitrage Dashboard</title>
@@ -30,6 +46,9 @@ body { font-family: sans-serif; margin: 24px; color: #0f172a; }
 .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 12px; }
 code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; font-size: 12px; }
+th { background: #f8fafc; }
 </style></head>
 <body>
 <h1>XLayer Arbitrage Executor</h1>
@@ -46,13 +65,22 @@ code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
   <strong>Live Mode</strong>: runs=${metrics.byMode.live.runs}, executed=${metrics.byMode.live.executed}, pnl=$${metrics.byMode.live.realizedPnlUsd}
 </div>
 <div class="card">
-  <strong>Autopilot:</strong> ${state.autopilot} | <strong>Mode:</strong> ${state.session.mode}<br/>
-  <strong>Wallet:</strong> ${state.session.wallet.address || 'not logged in'}<br/>
-  <strong>Signals:</strong> source=${state.runtimeSignals.quoteSource}, wsQuotes=${state.runtimeSignals.wsQuoteCount}, pendingMempool=${state.runtimeSignals.pendingMempoolTxs}, gasMult=${state.runtimeSignals.gasPressureMultiplier}<br/>
+  <strong>Autopilot:</strong> ${snapshot.session.autopilot} | <strong>Mode:</strong> ${snapshot.session.mode}<br/>
+  <strong>Wallet:</strong> ${snapshot.session.wallet.address || 'not logged in'}<br/>
+  <strong>Signals:</strong> source=${snapshot.runtimeSignals.quoteSource}, wsQuotes=${snapshot.runtimeSignals.wsQuoteCount}, pendingMempool=${snapshot.runtimeSignals.pendingMempoolTxs}, gasMult=${snapshot.runtimeSignals.gasPressureMultiplier}<br/>
   <strong>Alerts:</strong> ${alertStatus.ok ? 'healthy' : `${alertStatus.alerts.length} active`}<br/>
   <strong>Last Record:</strong> ${last ? `${last.ts} / ${last.reason} / pnl=$${last.realizedProfitUsd}` : 'none'}
 </div>
-<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code></p>
+<div class="card">
+  <strong>Recent Trade PnL</strong>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Mode</th><th>Route</th><th>Executed</th><th>Realized PnL</th><th>Net After Costs</th><th>Reason</th></tr>
+    </thead>
+    <tbody>${rows || '<tr><td colspan="7">No trades yet</td></tr>'}</tbody>
+  </table>
+</div>
+<p>JSON endpoints: <code>/metrics</code>, <code>/alerts</code>, <code>/session</code>, <code>/config</code>, <code>/opportunities</code>, <code>/dashboard-data</code></p>
 </body></html>`;
 }
 
@@ -219,7 +247,10 @@ if (cmd === 'api') {
     }
     if (req.url === '/dashboard') {
       res.setHeader('content-type', 'text/html; charset=utf-8');
-      return res.end(renderDashboard(getPnlMetrics()));
+      return res.end(renderDashboard(getDashboardSnapshot()));
+    }
+    if (req.url === '/dashboard-data') {
+      return res.end(JSON.stringify({ dashboard: getDashboardSnapshot() }));
     }
     if (req.url === '/healthz') {
       return res.end(JSON.stringify({ ok: true, ts: Date.now() }));

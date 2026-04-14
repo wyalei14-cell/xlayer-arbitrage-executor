@@ -27,6 +27,7 @@ const {
   walletLogout,
   readExecutionLedger,
   getPnlMetrics,
+  getDashboardSnapshot,
   evaluateRuntimeAlerts,
   getAlertStatus,
   evaluateExecutionCircuitBreaker,
@@ -431,6 +432,26 @@ test('getPnlMetrics returns execution and pnl aggregates', () => {
   assert.equal(metrics.totalExecutionCostUsd, 0.3);
   assert.equal(metrics.byMode.paper.runs, 2);
   assert.equal(metrics.byMode.live.executed, 1);
+});
+
+test('getDashboardSnapshot exposes recent trade pnl rows for dashboard rendering', () => {
+  const ledgerFile = path.join(process.cwd(), 'data', 'executions.jsonl');
+  fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+  fs.writeFileSync(
+    ledgerFile,
+    [
+      JSON.stringify({ ts: '2026-04-14T00:00:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 1.2, netAfterAllCostsUsd: 1.3, mode: 'paper', reason: 'paper-filled' }),
+      JSON.stringify({ ts: '2026-04-14T00:01:00.000Z', routeType: 'triangular', success: false, realizedProfitUsd: 0, netAfterAllCostsUsd: -0.5, mode: 'paper', reason: 'profit-too-low-after-gas' }),
+      JSON.stringify({ ts: '2026-04-14T00:02:00.000Z', routeType: 'two-pool', success: true, realizedProfitUsd: 2.4, netAfterAllCostsUsd: 2.6, mode: 'live', reason: 'executed-attempt-1' })
+    ].join('\n') + '\n'
+  );
+
+  const snapshot = getDashboardSnapshot({ tradeLimit: 2, ledgerLimit: 20 });
+  assert.equal(snapshot.recentTrades.length, 2);
+  assert.equal(snapshot.recentTrades[0].ts, '2026-04-14T00:02:00.000Z');
+  assert.equal(snapshot.recentTrades[0].realizedProfitUsd, 2.4);
+  assert.equal(snapshot.recentTrades[1].ts, '2026-04-14T00:01:00.000Z');
+  assert.equal(snapshot.metrics.sampleSize, 3);
 });
 
 test('scanOpportunities applies mempool pressure to net profit', () => {
