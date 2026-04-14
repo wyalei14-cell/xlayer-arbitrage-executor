@@ -34,6 +34,7 @@ const {
   evaluateExecutionCircuitBreaker,
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
+  onStreamingSignalUpdate,
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
   shouldNotifyAlertSnapshot,
@@ -734,6 +735,60 @@ test('startStreamingSignalListeners ingests websocket and mempool socket payload
     assert.equal(state.runtimeSignals.wsQuoteCount, 1);
     assert.equal(state.runtimeSignals.pendingMempoolTxs, 1);
   } finally {
+    state.config.wsQuoteSocketUrl = '';
+    state.config.mempoolSocketUrl = '';
+    if (prevWsUrl === undefined) delete process.env.WS_QUOTES_URL;
+    else process.env.WS_QUOTES_URL = prevWsUrl;
+    if (prevMempoolUrl === undefined) delete process.env.MEMPOOL_WS_URL;
+    else process.env.MEMPOOL_WS_URL = prevMempoolUrl;
+    global.WebSocket = PrevWebSocket;
+    resetStreamingSignalCache();
+  }
+});
+
+test('onStreamingSignalUpdate emits events when websocket data arrives', () => {
+  const prevWsUrl = process.env.WS_QUOTES_URL;
+  const prevMempoolUrl = process.env.MEMPOOL_WS_URL;
+  const PrevWebSocket = global.WebSocket;
+
+  const sockets = [];
+  class FakeSocket {
+    constructor(url) {
+      this.url = url;
+      this.handlers = {};
+      sockets.push(this);
+    }
+
+    addEventListener(name, handler) {
+      this.handlers[name] = handler;
+    }
+
+    emit(name, payload) {
+      if (this.handlers[name]) this.handlers[name](payload);
+    }
+
+    close() {}
+  }
+
+  const events = [];
+  const unsubscribe = onStreamingSignalUpdate((evt) => events.push(evt));
+
+  try {
+    process.env.WS_QUOTES_URL = 'wss://quotes.test';
+    process.env.MEMPOOL_WS_URL = 'wss://mempool.test';
+    state.config.wsQuoteSocketUrl = process.env.WS_QUOTES_URL;
+    state.config.mempoolSocketUrl = process.env.MEMPOOL_WS_URL;
+    global.WebSocket = FakeSocket;
+
+    startStreamingSignalListeners();
+    const ts = Date.now();
+    sockets[0].emit('message', {
+      data: JSON.stringify([{ dex: 'WS', base: 'USDC', quote: 'OKB', price: 1.02, feePct: 0.2, slippagePct: 0.1, liqUsd: 200000, ts }])
+    });
+
+    assert.ok(events.some((evt) => evt.kind === 'ws-socket'));
+  } finally {
+    unsubscribe();
     state.config.wsQuoteSocketUrl = '';
     state.config.mempoolSocketUrl = '';
     if (prevWsUrl === undefined) delete process.env.WS_QUOTES_URL;

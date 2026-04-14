@@ -16,7 +16,8 @@ const {
   getPnlMetrics,
   getAlertStatus,
   getDashboardSnapshot,
-  getPrometheusMetrics
+  getPrometheusMetrics,
+  onStreamingSignalUpdate
 } = require('./engine');
 
 const cmd = process.argv[2] || 'scan';
@@ -102,20 +103,42 @@ if (cmd === 'autopilot') {
   setAutopilot(String(process.env.AUTOPILOT || 'true') === 'true');
   console.log(`autopilot=${state.autopilot}, mode=${state.session.mode}, interval=${state.config.scanIntervalMs}ms`);
 
-  const loop = async () => {
-    try {
-      const out = await runOnceAsync();
-      console.log(
-        `[${new Date().toISOString()}] best=${out.record.routeType} net=${out.record.netProfitUsd} executed=${out.record.success} mode=${out.record.mode} reason=${out.record.reason}`
-      );
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] scan failed: ${err.message}`);
-    } finally {
-      setTimeout(loop, state.config.scanIntervalMs);
-    }
+  let timer = null;
+  let running = false;
+
+  const scheduleLoop = (delayMs = state.config.scanIntervalMs) => {
+    if (timer) return;
+    timer = setTimeout(async () => {
+      timer = null;
+      if (running) {
+        scheduleLoop(Math.max(250, state.config.scanIntervalMs));
+        return;
+      }
+
+      running = true;
+      try {
+        const out = await runOnceAsync();
+        console.log(
+          `[${new Date().toISOString()}] best=${out.record.routeType} net=${out.record.netProfitUsd} executed=${out.record.success} mode=${out.record.mode} reason=${out.record.reason}`
+        );
+      } catch (err) {
+        console.error(`[${new Date().toISOString()}] scan failed: ${err.message}`);
+      } finally {
+        running = false;
+        scheduleLoop(state.config.scanIntervalMs);
+      }
+    }, Math.max(0, delayMs));
   };
 
-  loop();
+  onStreamingSignalUpdate((evt) => {
+    if (!state.autopilot) return;
+    if (running || timer) return;
+    const fastDelayMs = Number(process.env.STREAMING_TRIGGER_SCAN_DEBOUNCE_MS || 250);
+    console.log(`[${new Date().toISOString()}] streaming-trigger kind=${evt.kind} ws=${evt.wsQuoteCount} mempool=${evt.pendingMempoolTxs}`);
+    scheduleLoop(Math.max(0, fastDelayMs));
+  });
+
+  scheduleLoop(0);
   return;
 }
 

@@ -55,6 +55,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
+  - streaming-triggered fast wakeups (websocket/mempool update events can trigger debounced immediate scans between normal intervals)
   - **single-flight execution lock** prevents overlapping scans/executions (fail-closed when a prior run is still active)
   - **cross-process lock parity** persists single-flight lock to `data/execution-lock.json` so cron/autopilot/manual scans cannot overlap across different Node processes
   - **critical-alert circuit breaker**: autopilot fails closed before execution when critical runtime alerts are active (failure streak, missing live wallet session, high gas pressure, stuck execution lock)
@@ -134,6 +135,7 @@ node src/cli.js wallet-logout
 - `PORT=8787` (api server)
 - `WS_QUOTES_URL=wss://...` (optional real-time websocket feed for quote overlays; message payload supports `[rows]` or `{data:[rows]}`)
 - `MEMPOOL_WS_URL=wss://...` (optional real-time websocket feed for pending tx overlays; payload supports `[rows]` or `{data:[rows]}`)
+- `STREAMING_TRIGGER_SCAN_DEBOUNCE_MS=250` (autopilot debounce before running an immediate scan after streaming signal updates)
 - `MAX_WS_SIGNAL_AGE_MS=12000` (optional freshness guard for websocket quote overlay; stale rows are dropped)
 - `MAX_MEMPOOL_SIGNAL_AGE_MS=15000` (optional freshness guard for mempool feed; stale rows are dropped)
 - `STREAMING_BOOTSTRAP_GRACE_MS=30000` (fail-closed bootstrap grace window; block execution if websocket/mempool listeners produce no fresh updates after this window)

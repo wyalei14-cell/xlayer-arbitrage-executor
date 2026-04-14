@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { EventEmitter } = require('events');
 
 const RUNTIME_STATE_FILE = path.join(process.cwd(), 'data', 'runtime-state.json');
 const EXECUTION_LOCK_FILE = path.join(process.cwd(), 'data', 'execution-lock.json');
@@ -27,6 +28,8 @@ const executionLock = {
   active: false,
   sinceMs: 0
 };
+
+const runtimeEvents = new EventEmitter();
 
 const state = {
   autopilot: false,
@@ -524,6 +527,15 @@ function normalizeMempoolRows(rows) {
     .filter((row) => row.tokenIn && row.tokenOut);
 }
 
+function emitStreamingSignalUpdate(kind) {
+  runtimeEvents.emit('streaming-signal', {
+    ts: new Date().toISOString(),
+    kind,
+    wsQuoteCount: streamingCache.wsQuotes.length,
+    pendingMempoolTxs: streamingCache.pendingTxs.length
+  });
+}
+
 function refreshStreamingOverlay() {
   const wsRaw = readArrayFileSafe(state.config.wsQuoteFile);
   const mempoolRaw = readArrayFileSafe(state.config.mempoolFile);
@@ -534,11 +546,13 @@ function refreshStreamingOverlay() {
   if (ws.rows.length || !streamingCache.wsQuotes.length) {
     streamingCache.wsQuotes = ws.rows;
     streamingCache.wsUpdatedAt = new Date().toISOString();
+    emitStreamingSignalUpdate('ws-file');
   }
 
   if (mempool.rows.length || !streamingCache.pendingTxs.length) {
     streamingCache.pendingTxs = mempool.rows;
     streamingCache.mempoolUpdatedAt = new Date().toISOString();
+    emitStreamingSignalUpdate('mempool-file');
   }
 
   state.runtimeSignals.wsDroppedStale = ws.dropped;
@@ -587,6 +601,12 @@ function resetAlertSnapshotCache() {
   alertCache.lastTs = 0;
 }
 
+function onStreamingSignalUpdate(listener) {
+  if (typeof listener !== 'function') return () => {};
+  runtimeEvents.on('streaming-signal', listener);
+  return () => runtimeEvents.off('streaming-signal', listener);
+}
+
 function scheduleSocketReconnect(kind, connectFn) {
   const key = kind === 'ws' ? 'wsReconnectTimer' : 'mempoolReconnectTimer';
   if (streamingCache[key]) clearTimeout(streamingCache[key]);
@@ -616,10 +636,12 @@ function startSocketListener({ kind, url, onRows }) {
         streamingCache.wsQuotes = filtered.rows;
         streamingCache.wsUpdatedAt = new Date().toISOString();
         state.runtimeSignals.wsDroppedStale = (state.runtimeSignals.wsDroppedStale || 0) + filtered.dropped;
+        emitStreamingSignalUpdate('ws-socket');
       } else {
         streamingCache.pendingTxs = filtered.rows;
         streamingCache.mempoolUpdatedAt = new Date().toISOString();
         state.runtimeSignals.mempoolDroppedStale = (state.runtimeSignals.mempoolDroppedStale || 0) + filtered.dropped;
+        emitStreamingSignalUpdate('mempool-socket');
       }
     });
 
@@ -2591,6 +2613,7 @@ module.exports = {
   collectStreamingStaleAlerts,
   staleSignalExecutionGuard,
   startStreamingSignalListeners,
+  onStreamingSignalUpdate,
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
   shouldNotifyAlertSnapshot,
