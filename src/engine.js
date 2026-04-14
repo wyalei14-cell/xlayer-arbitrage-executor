@@ -59,6 +59,9 @@ const state = {
     maxMempoolGasMultiplier: 2,
     routeComplexityPenaltyUsdPerHop: 0.2,
     routeDexDiversityBonusUsd: 0.05,
+    assumedGasPerSwapHop: Number(process.env.ASSUMED_GAS_PER_SWAP_HOP || 135000),
+    assumedBaseGas: Number(process.env.ASSUMED_BASE_GAS || 105000),
+    assumedGasPriceGwei: Number(process.env.ASSUMED_GAS_PRICE_GWEI || 0.06),
     routerFeeBps: 1,
     bundleFeeUsd: 0.15,
     flashLoanFeeBps: 5,
@@ -1026,19 +1029,51 @@ function riskCheck(opp) {
   return { pass: true, reason: 'ok' };
 }
 
+function estimateExecutionCostForRouting(opp, hopCount) {
+  const tradeAmountUsd = Number(opp?.tradeAmountUsd || 0);
+  const routerFeeUsd = +(tradeAmountUsd * (state.config.routerFeeBps / 10_000)).toFixed(6);
+  const bundleFeeUsd = state.config.preferAtomicExecution ? Number(state.config.bundleFeeUsd || 0) : 0;
+  const flashLoanFeeUsd = tradeAmountUsd >= state.config.flashLoanMinUsd
+    ? +(tradeAmountUsd * (state.config.flashLoanFeeBps / 10_000)).toFixed(6)
+    : 0;
+
+  const baseGas = Number(state.config.assumedBaseGas || 0);
+  const gasPerHop = Number(state.config.assumedGasPerSwapHop || 0);
+  const gasUnits = baseGas + Math.max(1, hopCount) * gasPerHop;
+  const gasPriceGwei = Number(state.config.assumedGasPriceGwei || 0);
+  const nativeTokenPriceUsd = Number(process.env.NATIVE_TOKEN_PRICE_USD || state.config.nativeTokenPriceUsd || 0);
+  const gasNative = gasUnits * gasPriceGwei * 1e-9;
+  const mempoolMultiplier = Number(state.runtimeSignals?.gasPressureMultiplier || 1);
+  const gasCostUsd = +(gasNative * nativeTokenPriceUsd * state.config.gasSafetyMultiplier * mempoolMultiplier).toFixed(6);
+
+  const totalExecutionCostUsd = +(routerFeeUsd + bundleFeeUsd + flashLoanFeeUsd + gasCostUsd).toFixed(6);
+  return {
+    routerFeeUsd,
+    bundleFeeUsd,
+    flashLoanFeeUsd,
+    gasCostUsd,
+    totalExecutionCostUsd
+  };
+}
+
 function scoreOpportunityForRouting(opp) {
   const path = Array.isArray(opp?.path) ? opp.path : [];
   const hopCount = path.length;
   const complexityPenaltyUsd = Math.max(0, hopCount - 1) * state.config.routeComplexityPenaltyUsdPerHop;
   const venueCount = new Set(path.map((leg) => String(leg).split('@')[1]).filter(Boolean)).size;
   const dexDiversityBonusUsd = venueCount * state.config.routeDexDiversityBonusUsd;
-  const routingScoreUsd = +((opp?.netProfitUsd || 0) - complexityPenaltyUsd + dexDiversityBonusUsd).toFixed(4);
+  const executionCost = estimateExecutionCostForRouting(opp, hopCount);
+  const estimatedNetAfterExecutionUsd = +((opp?.netProfitUsd || 0) - executionCost.totalExecutionCostUsd).toFixed(4);
+  const routingScoreUsd = +(estimatedNetAfterExecutionUsd - complexityPenaltyUsd + dexDiversityBonusUsd).toFixed(4);
 
   return {
     hopCount,
     venueCount,
     complexityPenaltyUsd: +complexityPenaltyUsd.toFixed(4),
     dexDiversityBonusUsd: +dexDiversityBonusUsd.toFixed(4),
+    estimatedExecutionCostUsd: executionCost.totalExecutionCostUsd,
+    estimatedGasCostUsd: executionCost.gasCostUsd,
+    estimatedNetAfterExecutionUsd,
     routingScoreUsd
   };
 }

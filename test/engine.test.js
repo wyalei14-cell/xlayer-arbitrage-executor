@@ -119,7 +119,7 @@ test('riskCheck blocks low-liquidity opportunities', () => {
   assert.equal(out.reason, 'liquidity-too-low');
 });
 
-test('scoreOpportunityForRouting applies complexity penalty and venue bonus', () => {
+test('scoreOpportunityForRouting applies execution-cost-aware routing penalty and venue bonus', () => {
   const out = scoreOpportunityForRouting({
     netProfitUsd: 5,
     path: ['USDC->ETH@Uni', 'ETH->OKB@Sync', 'OKB->USDC@Uni']
@@ -129,7 +129,9 @@ test('scoreOpportunityForRouting applies complexity penalty and venue bonus', ()
   assert.equal(out.venueCount, 2);
   assert.equal(out.complexityPenaltyUsd, 0.4);
   assert.equal(out.dexDiversityBonusUsd, 0.1);
-  assert.equal(out.routingScoreUsd, 4.7);
+  assert.ok(out.estimatedExecutionCostUsd > 0);
+  assert.ok(out.estimatedNetAfterExecutionUsd < 5);
+  assert.equal(out.routingScoreUsd, 4.5484);
 });
 
 test('buildBestPathPlan picks highest routing score among risk-passing opportunities', () => {
@@ -156,6 +158,34 @@ test('buildBestPathPlan picks highest routing score among risk-passing opportuni
   assert.ok(plan.selected);
   assert.equal(plan.selected.opp.type, 'two-pool');
   assert.equal(plan.ranked.length, 2);
+});
+
+test('buildBestPathPlan prefers lower-hop path when execution costs dominate', () => {
+  const assessed = [
+    {
+      opp: {
+        type: 'triangular',
+        netProfitUsd: 3.4,
+        tradeAmountUsd: 400,
+        path: ['USDC->ETH@A', 'ETH->OKB@B', 'OKB->USDC@C']
+      },
+      risk: { pass: true, reason: 'ok' }
+    },
+    {
+      opp: {
+        type: 'two-pool',
+        netProfitUsd: 3.2,
+        tradeAmountUsd: 120,
+        path: ['USDC->OKB@A', 'OKB->USDC@B']
+      },
+      risk: { pass: true, reason: 'ok' }
+    }
+  ];
+
+  const plan = buildBestPathPlan(assessed);
+  assert.ok(plan.selected);
+  assert.equal(plan.selected.opp.type, 'two-pool');
+  assert.ok(plan.ranked[0].routing.estimatedExecutionCostUsd < plan.ranked[1].routing.estimatedExecutionCostUsd);
 });
 
 test('buildRouterPlan constructs multi-hop aggregator route with min return', () => {

@@ -26,7 +26,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling
   - triangular arbitrage using token graph route simulation
-  - best-path builder ranks single-hop vs multi-hop routes with complexity penalty + DEX-diversity bonus
+  - best-path builder ranks single-hop vs multi-hop routes using execution-cost-aware scoring (estimated gas + router/bundle/flash-loan fees + complexity penalty + DEX-diversity bonus)
   - router/aggregator plan builder converts selected path into hop-level execution plan (`entryToken`, `exitToken`, `hops`, `expectedReturnUsd`, `minReturnUsd`)
 - Profit model:
   - gross profit
@@ -118,6 +118,9 @@ node src/cli.js wallet-logout
 - `GATEWAY_FORCE_MISSING_GAS=true` (test switch to force missing gas estimate in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `MAX_EXECUTION_GAS_COST_SHARE=0.7` (fail-closed cap: block execution when gas cost / gross edge exceeds this ratio)
+- `ASSUMED_BASE_GAS=105000` (best-path scoring estimate baseline gas units)
+- `ASSUMED_GAS_PER_SWAP_HOP=135000` (best-path scoring estimate gas units per swap hop)
+- `ASSUMED_GAS_PRICE_GWEI=0.06` (best-path scoring estimate gas price)
 - `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)
 - `SOAK_ITERATIONS=120` (default iterations for `npm run soak`)
 - `SOAK_INTERVAL_MS=1000` (delay between soak runs)
@@ -150,6 +153,9 @@ Default runtime risk config in `src/engine.js`:
 - `gasSafetyMultiplier` (default `1.15`)
 - `routeComplexityPenaltyUsdPerHop` (default `0.2`) penalizes multi-hop route complexity in best-path ranking
 - `routeDexDiversityBonusUsd` (default `0.05`) small bonus for route venue diversity in best-path ranking
+- `assumedBaseGas` (default `105000`) execution-cost-aware routing score baseline gas estimate
+- `assumedGasPerSwapHop` (default `135000`) extra gas estimate per hop for routing score
+- `assumedGasPriceGwei` (default `0.06`) gas-price estimate used in routing score
 - `routerFeeBps` (default `1`) aggregator/router execution fee included in net-profit gate
 - `bundleFeeUsd` (default `0.15`) bundle execution overhead for atomic path
 - `flashLoanFeeBps` (default `5`) flash-loan funding fee for larger trades
