@@ -61,6 +61,7 @@ const state = {
     alertMinExecutionRate: 0.2,
     alertMinRecentPnlUsd: -5,
     alertMaxGasCostShare: 0.6,
+    maxExecutionGasCostShare: Number(process.env.MAX_EXECUTION_GAS_COST_SHARE || 0.7),
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
     alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
     failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true'
@@ -793,6 +794,14 @@ function evaluateExecutionEconomics(opp, preflight) {
   };
 }
 
+function exceedsExecutionGasShare(economics) {
+  const grossNetUsd = Number(economics?.grossNetUsd || 0);
+  if (!(grossNetUsd > 0)) return false;
+  const gasCostUsd = Number(economics?.gasCostUsd || 0);
+  const gasShare = gasCostUsd / grossNetUsd;
+  return gasShare > Number(state.config.maxExecutionGasCostShare || Infinity);
+}
+
 function liquidityBoundedAmount(legs) {
   const minLiqUsd = Math.min(...legs.map((x) => x.liqUsd));
   const maxByLiquidity = minLiqUsd * (state.config.maxLiquidityUsagePct / 100);
@@ -1094,6 +1103,20 @@ function executeOpportunity(opp) {
       };
     }
 
+    if (exceedsExecutionGasShare(economics)) {
+      return {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: 'gas-share-too-high',
+        gasCostUsd: economics.gasCostUsd,
+        netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+        preflight
+      };
+    }
+
     const paperHash = 'paper-' + Buffer.from(`${Date.now()}-${Math.random()}`).toString('hex').slice(0, 16);
     return {
       success: true,
@@ -1135,6 +1158,20 @@ function executeOpportunity(opp) {
       netAfterGasUsd: economics.netAfterGasUsd,
         executionCostUsd: economics.executionCostUsd,
         netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+      preflight
+    };
+  }
+
+  if (exceedsExecutionGasShare(economics)) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: 'gas-share-too-high',
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
+      executionCostUsd: economics.executionCostUsd,
+      netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }

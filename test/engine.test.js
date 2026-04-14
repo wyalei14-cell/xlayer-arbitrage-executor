@@ -333,6 +333,33 @@ test('executeOpportunity blocks when gas-adjusted net profit is below threshold'
   else process.env.NATIVE_TOKEN_PRICE_USD = prevPrice;
 });
 
+test('executeOpportunity blocks when gas share of gross edge exceeds threshold', () => {
+  const prevPrice = process.env.NATIVE_TOKEN_PRICE_USD;
+  const prevShare = state.config.maxExecutionGasCostShare;
+
+  try {
+    process.env.NATIVE_TOKEN_PRICE_USD = '5000';
+    state.config.maxExecutionGasCostShare = 0.0001;
+    setMode('live');
+
+    const out = executeOpportunity({
+      path: ['USDC->OKB@A', 'OKB->USDC@B'],
+      legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+      tradeAmountUsd: 100,
+      slippageUsd: 0.4,
+      netProfitUsd: 50
+    });
+
+    assert.equal(out.success, false);
+    assert.equal(out.reason, 'gas-share-too-high');
+    assert.ok(out.gasCostUsd / 50 > state.config.maxExecutionGasCostShare);
+  } finally {
+    state.config.maxExecutionGasCostShare = prevShare;
+    if (prevPrice === undefined) delete process.env.NATIVE_TOKEN_PRICE_USD;
+    else process.env.NATIVE_TOKEN_PRICE_USD = prevPrice;
+  }
+});
+
 test('executeOpportunity includes router/bundle/flash-loan costs in profitability gate', () => {
   const prevBundleFee = state.config.bundleFeeUsd;
   const prevFlashFee = state.config.flashLoanFeeBps;

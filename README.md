@@ -50,6 +50,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - **atomic preference path**: bundle-first execution plan with flash-loan-ready funding mode selection
   - **paper/live adapter parity**: paper mode also runs preflight (mock/live adapters) before fill
   - fail-closed preflight guard (blocks execution if any integration check fails, including atomic unavailability)
+  - fail-closed gas-risk guard (blocks execution when gas cost share exceeds configured edge threshold)
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
@@ -108,6 +109,7 @@ node src/cli.js wallet-logout
 - `GATEWAY_FORCE_SIM_FAIL=true` (test switch to force gateway simulation failure in mock mode)
 - `GATEWAY_FORCE_MISSING_GAS=true` (test switch to force missing gas estimate in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
+- `MAX_EXECUTION_GAS_COST_SHARE=0.7` (fail-closed cap: block execution when gas cost / gross edge exceeds this ratio)
 - `ATOMIC_FORCE_DISABLE=true` (test switch to force atomic-preflight failure)
 - `SOAK_ITERATIONS=120` (default iterations for `npm run soak`)
 - `SOAK_INTERVAL_MS=1000` (delay between soak runs)
@@ -145,6 +147,7 @@ Default runtime risk config in `src/engine.js`:
 - `alertMinExecutionRate` (default `0.2`) warning threshold when sample size >=5
 - `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
+- `maxExecutionGasCostShare` (default `0.7`) hard fail-closed cap for per-trade gas share gating before send
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
 - `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window
 - `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
