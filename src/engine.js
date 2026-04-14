@@ -107,6 +107,8 @@ const state = {
     listenersStartedAt: null,
     wsUpdatedAt: null,
     mempoolUpdatedAt: null,
+    wsSignalAgeMs: 0,
+    mempoolSignalAgeMs: 0,
     executionLockActive: false,
     executionLockSince: null,
     executionLockAgeMs: 0
@@ -115,6 +117,19 @@ const state = {
 
 function now() {
   return Date.now();
+}
+
+function computeSignalAgeMs(isoTs, nowTs = now()) {
+  if (!isoTs) return 0;
+  const parsed = Date.parse(isoTs);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, nowTs - parsed);
+}
+
+function refreshRuntimeSignalAges(runtimeSignals = state.runtimeSignals, nowTs = now()) {
+  runtimeSignals.wsSignalAgeMs = computeSignalAgeMs(runtimeSignals.wsUpdatedAt, nowTs);
+  runtimeSignals.mempoolSignalAgeMs = computeSignalAgeMs(runtimeSignals.mempoolUpdatedAt, nowTs);
+  return runtimeSignals;
 }
 
 function createRunId(prefix = 'run') {
@@ -778,6 +793,7 @@ function loadMarketSync() {
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
+  refreshRuntimeSignalAges(state.runtimeSignals);
 
   return { quotes, pendingTxs };
 }
@@ -1020,6 +1036,7 @@ function scanOpportunitiesFromData({ quotes, pendingTxs = [], source = 'replay',
     wsUpdatedAt: state.runtimeSignals.wsUpdatedAt,
     mempoolUpdatedAt: state.runtimeSignals.mempoolUpdatedAt
   };
+  refreshRuntimeSignalAges(state.runtimeSignals);
   const opportunities = [...detectTwoPool(validated), ...detectTriangular(validated)];
   const pressured = applyMempoolPressure(opportunities, pendingTxs);
   return pressured.sort((a, b) => b.netProfitUsd - a.netProfitUsd);
@@ -1077,6 +1094,7 @@ async function loadMarketAsync() {
     wsUpdatedAt: streamingCache.wsUpdatedAt,
     mempoolUpdatedAt: streamingCache.mempoolUpdatedAt
   };
+  refreshRuntimeSignalAges(state.runtimeSignals);
 
   return { quotes, pendingTxs };
 }
@@ -1895,12 +1913,14 @@ function syncExecutionLockSignal() {
 
 function getAlertStatus() {
   syncExecutionLockSignal();
+  refreshRuntimeSignalAges(state.runtimeSignals);
   const rows = readExecutionLedger(state.config.alertWindow);
   const metrics = getPnlMetrics({ limit: state.config.alertWindow });
   return evaluateRuntimeAlerts({ rows, metrics, runtimeState: state });
 }
 
 function getDashboardSnapshot({ tradeLimit = 10, ledgerLimit = 200 } = {}) {
+  refreshRuntimeSignalAges(state.runtimeSignals);
   const metrics = getPnlMetrics({ limit: ledgerLimit });
   const alerts = evaluateRuntimeAlerts({
     rows: readExecutionLedger(state.config.alertWindow),
@@ -1937,6 +1957,7 @@ function getDashboardSnapshot({ tradeLimit = 10, ledgerLimit = 200 } = {}) {
 }
 
 function getPrometheusMetrics() {
+  refreshRuntimeSignalAges(state.runtimeSignals);
   const metrics = getPnlMetrics();
   const alertStatus = getAlertStatus();
   const criticalAlerts = (alertStatus.alerts || []).filter((a) => a.level === 'critical').length;

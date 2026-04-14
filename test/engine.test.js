@@ -557,6 +557,20 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
   assert.match(text, /xlayer_arbitrage_runtime_signal_age_ms\{stream="ws"\}/);
 });
 
+test('getPrometheusMetrics reports non-zero runtime signal age when updates are old', () => {
+  state.runtimeSignals.wsUpdatedAt = new Date(Date.now() - 45_000).toISOString();
+  state.runtimeSignals.mempoolUpdatedAt = new Date(Date.now() - 30_000).toISOString();
+
+  const text = getPrometheusMetrics();
+  const wsMatch = text.match(/xlayer_arbitrage_runtime_signal_age_ms\{stream="ws"\} (\d+(?:\.\d+)?)/);
+  const mempoolMatch = text.match(/xlayer_arbitrage_runtime_signal_age_ms\{stream="mempool"\} (\d+(?:\.\d+)?)/);
+
+  assert.ok(wsMatch);
+  assert.ok(mempoolMatch);
+  assert.ok(Number(wsMatch[1]) >= 40000);
+  assert.ok(Number(mempoolMatch[1]) >= 25000);
+});
+
 test('scanOpportunities applies mempool pressure to net profit', () => {
   fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
   const ts = Date.now();
