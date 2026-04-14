@@ -47,6 +47,7 @@ const mempoolFile = path.join(process.cwd(), 'data', 'mempool.json');
 const preflightFile = path.join(process.cwd(), 'data', 'preflight.jsonl');
 const alertsFile = path.join(process.cwd(), 'data', 'alerts.jsonl');
 const routeDecisionsFile = path.join(process.cwd(), 'data', 'route-decisions.jsonl');
+const executionLockFile = path.join(process.cwd(), 'data', 'execution-lock.json');
 
 function resetSession() {
   state.autopilot = false;
@@ -70,6 +71,7 @@ test.beforeEach(() => {
   if (fs.existsSync(preflightFile)) fs.unlinkSync(preflightFile);
   if (fs.existsSync(alertsFile)) fs.unlinkSync(alertsFile);
   if (fs.existsSync(routeDecisionsFile)) fs.unlinkSync(routeDecisionsFile);
+  if (fs.existsSync(executionLockFile)) fs.unlinkSync(executionLockFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -1011,6 +1013,24 @@ test('executeOpportunity fail-closes when streaming overlays become stale', () =
   state.runtimeSignals.wsUpdatedAt = prev.wsUpdatedAt;
   state.runtimeSignals.mempoolUpdatedAt = prev.mempoolUpdatedAt;
   setMode(prev.mode);
+});
+
+test('runOnce fail-closes when cross-process execution lock file is active', () => {
+  fs.mkdirSync(path.dirname(executionLockFile), { recursive: true });
+  fs.writeFileSync(
+    executionLockFile,
+    JSON.stringify({
+      owner: 'external-scheduler',
+      pid: 99999,
+      mode: 'live',
+      sinceMs: Date.now()
+    })
+  );
+
+  const out = runOnce();
+  assert.equal(out.record.success, false);
+  assert.match(out.record.reason, /execution-lock-active/);
+  assert.ok(out.record.reason.includes('ms>'));
 });
 
 test('runOnce fail-closes with execution circuit breaker on critical alerts', () => {

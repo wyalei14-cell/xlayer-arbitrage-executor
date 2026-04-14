@@ -56,6 +56,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
   - **single-flight execution lock** prevents overlapping scans/executions (fail-closed when a prior run is still active)
+  - **cross-process lock parity** persists single-flight lock to `data/execution-lock.json` so cron/autopilot/manual scans cannot overlap across different Node processes
   - **critical-alert circuit breaker**: autopilot fails closed before execution when critical runtime alerts are active (failure streak, missing live wallet session, high gas pressure, stuck execution lock)
 - Opportunity + operations API:
   - `GET /opportunities`
@@ -210,6 +211,9 @@ Alert webhook error log file:
 
 Session state file:
 - `data/runtime-state.json` (autopilot + mode + wallet login persistence)
+
+Execution lock file:
+- `data/execution-lock.json` (cross-process single-flight lock metadata: owner/pid/mode/sinceMs; stale lock auto-expires via `EXECUTION_LOCK_TTL_MS`)
 
 Backtest files:
 - input: `data/historical-snapshots.json` (array of `{ ts, quotes[], pendingTxs[] }`)

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const RUNTIME_STATE_FILE = path.join(process.cwd(), 'data', 'runtime-state.json');
+const EXECUTION_LOCK_FILE = path.join(process.cwd(), 'data', 'execution-lock.json');
 
 const streamingCache = {
   initialized: false,
@@ -2014,6 +2015,33 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
 }
 
+function readExecutionLockFile() {
+  if (!fs.existsSync(EXECUTION_LOCK_FILE)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(EXECUTION_LOCK_FILE, 'utf8'));
+    if (!raw || typeof raw !== 'object') return null;
+    const sinceMs = Number(raw.sinceMs || 0);
+    if (!(sinceMs > 0)) return null;
+    return {
+      owner: raw.owner || 'unknown',
+      pid: Number(raw.pid || 0) || null,
+      sinceMs,
+      mode: raw.mode === 'live' ? 'live' : 'paper'
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeExecutionLockFile(payload) {
+  fs.mkdirSync(path.dirname(EXECUTION_LOCK_FILE), { recursive: true });
+  fs.writeFileSync(EXECUTION_LOCK_FILE, JSON.stringify(payload, null, 2));
+}
+
+function clearExecutionLockFile() {
+  if (fs.existsSync(EXECUTION_LOCK_FILE)) fs.unlinkSync(EXECUTION_LOCK_FILE);
+}
+
 function acquireExecutionLock() {
   const ts = now();
   const ttlMs = Math.max(1_000, Number(state.config.executionLockTtlMs || 120_000));
@@ -2024,21 +2052,41 @@ function acquireExecutionLock() {
       state.runtimeSignals.executionLockActive = true;
       state.runtimeSignals.executionLockSince = new Date(executionLock.sinceMs).toISOString();
       state.runtimeSignals.executionLockAgeMs = ageMs;
-      return { ok: false, reason: 'execution-lock-active', ageMs, ttlMs };
+      return { ok: false, reason: 'execution-lock-active', ageMs, ttlMs, owner: 'in-memory' };
     }
   }
+
+  const fileLock = readExecutionLockFile();
+  if (fileLock) {
+    const fileAgeMs = ts - fileLock.sinceMs;
+    if (fileAgeMs <= ttlMs) {
+      state.runtimeSignals.executionLockActive = true;
+      state.runtimeSignals.executionLockSince = new Date(fileLock.sinceMs).toISOString();
+      state.runtimeSignals.executionLockAgeMs = fileAgeMs;
+      return { ok: false, reason: 'execution-lock-active', ageMs: fileAgeMs, ttlMs, owner: fileLock.owner };
+    }
+  }
+
+  const owner = `${process.pid || 'pid-unknown'}@${state.session.mode}`;
+  writeExecutionLockFile({
+    owner,
+    pid: process.pid || null,
+    mode: state.session.mode,
+    sinceMs: ts
+  });
 
   executionLock.active = true;
   executionLock.sinceMs = ts;
   state.runtimeSignals.executionLockActive = true;
   state.runtimeSignals.executionLockSince = new Date(ts).toISOString();
   state.runtimeSignals.executionLockAgeMs = 0;
-  return { ok: true, reason: 'ok' };
+  return { ok: true, reason: 'ok', owner };
 }
 
 function releaseExecutionLock() {
   executionLock.active = false;
   executionLock.sinceMs = 0;
+  clearExecutionLockFile();
   state.runtimeSignals.executionLockActive = false;
   state.runtimeSignals.executionLockSince = null;
   state.runtimeSignals.executionLockAgeMs = 0;
