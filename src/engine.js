@@ -72,6 +72,8 @@ const state = {
     alertMinRecentPnlUsd: -5,
     alertMaxGasCostShare: 0.6,
     maxExecutionGasCostShare: Number(process.env.MAX_EXECUTION_GAS_COST_SHARE || 0.7),
+    requireSimulationNetProfit: String(process.env.REQUIRE_SIMULATION_NET_PROFIT || 'true') === 'true',
+    maxSimulationNetDeviationPct: Number(process.env.MAX_SIMULATION_NET_DEVIATION_PCT || 35),
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
     alertMaxPreflightLatencyMs: Number(process.env.ALERT_MAX_PREFLIGHT_LATENCY_MS || 2_500),
     maxPreflightLatencyMs: Number(process.env.MAX_PREFLIGHT_LATENCY_MS || 5_000),
@@ -259,11 +261,18 @@ function securityAdapter(opp, txPlan) {
   throw new Error(`security-scan-failed: unsupported SECURITY_ADAPTER=${mode}`);
 }
 
-function onchainGatewayAdapter(txPlan) {
+function onchainGatewayAdapter(txPlan, context = {}) {
   const mode = getAdapterMode('GATEWAY_ADAPTER');
   if (mode === 'mock') {
     const forceSimFail = String(process.env.GATEWAY_FORCE_SIM_FAIL || 'false') === 'true';
     const forceMissingGas = String(process.env.GATEWAY_FORCE_MISSING_GAS || 'false') === 'true';
+    const tradeAmountUsd = Number(context.tradeAmountUsd || 0);
+    const expectedReturnUsd = Number(context.expectedReturnUsd || 0);
+    const expectedNetUsd = Number(context.expectedNetUsd);
+    const simulatedNetUsd = Number.isFinite(expectedNetUsd)
+      ? +(expectedNetUsd * 0.998).toFixed(6)
+      : +(Math.max(0, expectedReturnUsd - tradeAmountUsd) * 0.998).toFixed(6);
+    const simulatedReturnUsd = +(tradeAmountUsd + simulatedNetUsd).toFixed(6);
 
     return {
       provider: 'gateway-mock',
@@ -273,7 +282,13 @@ function onchainGatewayAdapter(txPlan) {
       },
       simulation: forceSimFail
         ? { ok: false, status: 'revert', reason: 'forced-simulation-failure' }
-        : { ok: true, status: 'success' }
+        : {
+            ok: true,
+            status: 'success',
+            estimatedReturnUsd: simulatedReturnUsd,
+            estimatedNetUsd: simulatedNetUsd,
+            tradeAmountUsd
+          }
     };
   }
   if (mode === 'live') {
@@ -354,7 +369,11 @@ function buildOnchainExecutionPlan(opp) {
     markStage('security-scan', 'ok', securityStartedMs, { provider: security.provider, riskLevel: security.riskLevel });
 
     const gatewayStartedMs = now();
-    const gateway = onchainGatewayAdapter(dex.tx);
+    const gateway = onchainGatewayAdapter(dex.tx, {
+      tradeAmountUsd: opp?.tradeAmountUsd,
+      expectedReturnUsd: routerPlan?.expectedReturnUsd,
+      expectedNetUsd: opp?.netProfitUsd
+    });
     if (!gateway.estimate?.gasLimit || !gateway.simulation?.ok) {
       markStage('gateway-preflight', 'error', gatewayStartedMs, {
         gasLimit: gateway.estimate?.gasLimit || null,
@@ -798,9 +817,47 @@ function exceedsPreflightLatency(preflight) {
   return latencyMs > thresholdMs;
 }
 
+function simulationNetDeviationCheck(opp, preflight) {
+  const modeledNetUsd = Number(opp?.netProfitUsd || 0);
+  const simulatedNetUsd = Number(preflight?.gateway?.simulation?.estimatedNetUsd);
+
+  if (!Number.isFinite(simulatedNetUsd)) {
+    return {
+      pass: !state.config.requireSimulationNetProfit,
+      reason: 'simulation-net-missing',
+      modeledNetUsd,
+      simulatedNetUsd: null,
+      deviationPct: null
+    };
+  }
+
+  if (!(modeledNetUsd > 0)) {
+    return {
+      pass: simulatedNetUsd > 0,
+      reason: simulatedNetUsd > 0 ? 'ok' : 'simulation-net-nonpositive',
+      modeledNetUsd,
+      simulatedNetUsd,
+      deviationPct: null
+    };
+  }
+
+  const deviationPct = Math.abs(simulatedNetUsd - modeledNetUsd) / modeledNetUsd * 100;
+  const limitPct = Number(state.config.maxSimulationNetDeviationPct || 0);
+  return {
+    pass: deviationPct <= limitPct,
+    reason: deviationPct <= limitPct ? 'ok' : 'simulation-net-deviation-too-high',
+    modeledNetUsd,
+    simulatedNetUsd,
+    deviationPct: +deviationPct.toFixed(4)
+  };
+}
+
 function evaluateExecutionEconomics(opp, preflight) {
-  const grossNetUsd = Number(opp?.netProfitUsd || 0);
+  const modeledNetUsd = Number(opp?.netProfitUsd || 0);
   const tradeAmountUsd = Number(opp?.tradeAmountUsd || 0);
+  const simulatedNetUsd = Number(preflight?.gateway?.simulation?.estimatedNetUsd);
+  const grossNetUsd = Number.isFinite(simulatedNetUsd) ? simulatedNetUsd : modeledNetUsd;
+  const netSource = Number.isFinite(simulatedNetUsd) ? 'gateway-simulation' : 'model';
   const gasCostUsd = estimateGasCostUsd(preflight?.gateway?.estimate);
   const routerFeeUsd = +(tradeAmountUsd * (state.config.routerFeeBps / 10_000)).toFixed(6);
 
@@ -815,6 +872,9 @@ function evaluateExecutionEconomics(opp, preflight) {
   const netAfterAllCostsUsd = +(netAfterGasUsd - executionCostUsd).toFixed(4);
 
   return {
+    modeledNetUsd,
+    simulatedNetUsd: Number.isFinite(simulatedNetUsd) ? simulatedNetUsd : null,
+    netSource,
     grossNetUsd,
     gasCostUsd,
     routerFeeUsd,
@@ -1169,6 +1229,22 @@ function executeOpportunity(opp) {
       };
     }
 
+    const simCheck = simulationNetDeviationCheck(rechecked, preflight);
+    if (!simCheck.pass) {
+      return {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: simCheck.reason,
+        gasCostUsd: economics.gasCostUsd,
+        netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+        preflight,
+        simulationCheck: simCheck
+      };
+    }
+
     if (economics.netAfterAllCostsUsd < state.config.minNetProfitUsd) {
       return {
         success: false,
@@ -1239,6 +1315,22 @@ function executeOpportunity(opp) {
       executionCostUsd: economics.executionCostUsd,
       netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
+    };
+  }
+
+  const simCheck = simulationNetDeviationCheck(rechecked, preflight);
+  if (!simCheck.pass) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: simCheck.reason,
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
+      executionCostUsd: economics.executionCostUsd,
+      netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+      preflight,
+      simulationCheck: simCheck
     };
   }
 
@@ -2281,6 +2373,7 @@ module.exports = {
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
   shouldNotifyAlertSnapshot,
-  exceedsPreflightLatency
+  exceedsPreflightLatency,
+  simulationNetDeviationCheck
 };
 

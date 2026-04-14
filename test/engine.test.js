@@ -36,7 +36,8 @@ const {
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
   shouldNotifyAlertSnapshot,
-  exceedsPreflightLatency
+  exceedsPreflightLatency,
+  simulationNetDeviationCheck
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
@@ -1150,4 +1151,61 @@ test('critical alerts can notify webhook once per deduplicated snapshot', async 
   state.config.alertNotifyWebhookUrl = prevWebhook;
   state.config.alertNotifyMinLevel = prevMinLevel;
   state.config.alertDedupWindowMs = prevDedup;
+});
+
+test('simulationNetDeviationCheck fails closed when simulation net is missing', () => {
+  const prevRequire = state.config.requireSimulationNetProfit;
+  state.config.requireSimulationNetProfit = true;
+
+  const check = simulationNetDeviationCheck(
+    { netProfitUsd: 5 },
+    { gateway: { simulation: { ok: true, status: 'success' } } }
+  );
+
+  assert.equal(check.pass, false);
+  assert.equal(check.reason, 'simulation-net-missing');
+
+  state.config.requireSimulationNetProfit = prevRequire;
+});
+
+test('executeOpportunity fail-closes when simulated net deviates above threshold', () => {
+  const prevGateway = process.env.GATEWAY_ADAPTER;
+  const prevWallet = process.env.WALLET_ADAPTER;
+  const prevDex = process.env.DEX_ADAPTER;
+  const prevSecurity = process.env.SECURITY_ADAPTER;
+  const prevMaxDeviation = state.config.maxSimulationNetDeviationPct;
+
+  process.env.GATEWAY_ADAPTER = 'mock';
+  process.env.WALLET_ADAPTER = 'mock';
+  process.env.DEX_ADAPTER = 'mock';
+  process.env.SECURITY_ADAPTER = 'mock';
+  state.config.maxSimulationNetDeviationPct = 0.01;
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    tradeAmountUsd: 120,
+    grossProfitUsd: 4,
+    feeUsd: 0.2,
+    slippageUsd: 0.1,
+    netProfitUsd: 0.2,
+    legs: [
+      { liqUsd: 100000 },
+      { liqUsd: 100000 }
+    ]
+  });
+
+  assert.equal(out.success, false);
+  assert.equal(out.reason, 'simulation-net-deviation-too-high');
+  assert.ok(out.simulationCheck);
+  assert.ok(out.simulationCheck.deviationPct > 0.01);
+
+  state.config.maxSimulationNetDeviationPct = prevMaxDeviation;
+  if (prevGateway === undefined) delete process.env.GATEWAY_ADAPTER;
+  else process.env.GATEWAY_ADAPTER = prevGateway;
+  if (prevWallet === undefined) delete process.env.WALLET_ADAPTER;
+  else process.env.WALLET_ADAPTER = prevWallet;
+  if (prevDex === undefined) delete process.env.DEX_ADAPTER;
+  else process.env.DEX_ADAPTER = prevDex;
+  if (prevSecurity === undefined) delete process.env.SECURITY_ADAPTER;
+  else process.env.SECURITY_ADAPTER = prevSecurity;
 });

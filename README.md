@@ -29,11 +29,11 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - best-path builder ranks single-hop vs multi-hop routes using execution-cost-aware scoring (estimated gas + router/bundle/flash-loan fees + complexity penalty + DEX-diversity bonus)
   - router/aggregator plan builder converts selected path into hop-level execution plan (`entryToken`, `exitToken`, `hops`, `expectedReturnUsd`, `minReturnUsd`)
 - Profit model:
-  - gross profit
-  - fees
-  - slippage
-  - pre-execution gas estimate (with safety multiplier)
-  - net profit after gas (must stay above threshold before execution)
+  - modeled gross profit / fees / slippage from scanner
+  - mandatory pre-execution gas estimate (with safety multiplier)
+  - gateway simulation net-return ingestion (`estimatedReturnUsd`/`estimatedNetUsd`) for execution-time net-profit math
+  - fail-closed simulation/model net-deviation gate before execution
+  - net profit after full execution costs (gas + router + bundle + flash-loan fees; threshold enforced)
 - Risk engine:
   - fail-closed quote validation (missing fields / stale snapshots)
   - min profit threshold
@@ -120,6 +120,8 @@ node src/cli.js wallet-logout
 - `GATEWAY_FORCE_MISSING_GAS=true` (test switch to force missing gas estimate in mock mode)
 - `NATIVE_TOKEN_PRICE_USD=45` (override gas token USD price for pre-execution net-profit check)
 - `MAX_EXECUTION_GAS_COST_SHARE=0.7` (fail-closed cap: block execution when gas cost / gross edge exceeds this ratio)
+- `REQUIRE_SIMULATION_NET_PROFIT=true|false` (default `true`; fail-close execution when gateway simulation does not return net estimate)
+- `MAX_SIMULATION_NET_DEVIATION_PCT=35` (fail-closed cap for deviation between modeled net and gateway simulated net)
 - `ASSUMED_BASE_GAS=105000` (best-path scoring estimate baseline gas units)
 - `ASSUMED_GAS_PER_SWAP_HOP=135000` (best-path scoring estimate gas units per swap hop)
 - `ASSUMED_GAS_PRICE_GWEI=0.06` (best-path scoring estimate gas price)
@@ -176,6 +178,8 @@ Default runtime risk config in `src/engine.js`:
 - `alertMinRecentPnlUsd` (default `-5`) warning when rolling realized PnL drops below threshold
 - `alertMaxGasCostShare` (default `0.6`) warning when gas/gross-net ratio is too high
 - `maxExecutionGasCostShare` (default `0.7`) hard fail-closed cap for per-trade gas share gating before send
+- `requireSimulationNetProfit` (default `true`) requires gateway simulation to provide `estimatedNetUsd` before execution
+- `maxSimulationNetDeviationPct` (default `35`) hard fail-closed tolerance for simulation net vs modeled net divergence
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
 - `alertMaxPreflightLatencyMs` (default `2500`) warning alert when recent average preflight latency is degraded
 - `maxPreflightLatencyMs` (default `5000`) hard fail-closed per-trade preflight timeout gate
