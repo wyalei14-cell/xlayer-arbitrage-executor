@@ -192,6 +192,9 @@ Execution log file:
 Preflight trace log file:
 - `data/preflight.jsonl` (one row per execution attempt with stage-by-stage telemetry: wallet/router/dex/security/gateway/atomic, per-stage `status`, per-stage `durationMs`, and total preflight latency)
 
+Route decision observability log file:
+- `data/route-decisions.jsonl` (one row per scan loop with selected best path + top ranked routing candidates, routing score, estimated execution cost, and risk pass/fail reasons)
+
 Alert log file:
 - `data/alerts.jsonl` (appends active alert snapshots; duplicate signatures are deduplicated within `alertDedupWindowMs`)
 

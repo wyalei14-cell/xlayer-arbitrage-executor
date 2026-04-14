@@ -45,6 +45,7 @@ const wsQuotesFile = path.join(process.cwd(), 'data', 'ws-quotes.json');
 const mempoolFile = path.join(process.cwd(), 'data', 'mempool.json');
 const preflightFile = path.join(process.cwd(), 'data', 'preflight.jsonl');
 const alertsFile = path.join(process.cwd(), 'data', 'alerts.jsonl');
+const routeDecisionsFile = path.join(process.cwd(), 'data', 'route-decisions.jsonl');
 
 function resetSession() {
   state.autopilot = false;
@@ -67,6 +68,7 @@ test.beforeEach(() => {
   if (fs.existsSync(mempoolFile)) fs.unlinkSync(mempoolFile);
   if (fs.existsSync(preflightFile)) fs.unlinkSync(preflightFile);
   if (fs.existsSync(alertsFile)) fs.unlinkSync(alertsFile);
+  if (fs.existsSync(routeDecisionsFile)) fs.unlinkSync(routeDecisionsFile);
 });
 
 test('validateMarket fails closed on missing fields', () => {
@@ -1024,6 +1026,25 @@ test('runPaperSoak executes requested iterations and restores prior session stat
   assert.equal(report.stoppedEarly, false);
   assert.equal(state.autopilot, false);
   assert.equal(state.session.mode, 'live');
+});
+
+test('runOnce writes route decision observability log with top routing candidates', () => {
+  state.autopilot = false;
+  setMode('paper');
+
+  const out = runOnce();
+  assert.ok(out.record);
+  assert.equal(fs.existsSync(routeDecisionsFile), true);
+
+  const rows = fs.readFileSync(routeDecisionsFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.ok(rows.length >= 1);
+
+  const latest = rows[rows.length - 1];
+  assert.equal(latest.mode, 'paper');
+  assert.equal(latest.phase, 'sync');
+  assert.ok(Array.isArray(latest.topCandidates));
+  assert.ok(latest.consideredCount >= 1);
+  assert.equal(typeof latest.selected.routingScoreUsd, 'number');
 });
 
 test('runPaperSoak stops early on critical alert when enabled', async () => {

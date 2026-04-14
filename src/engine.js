@@ -1318,6 +1318,52 @@ function appendPreflightRecord(preflight, opp = null) {
   );
 }
 
+function appendRouteDecisionRecord({
+  selected,
+  ranked = [],
+  opportunities = [],
+  autopilot = false,
+  mode = 'paper',
+  phase = 'scan'
+} = {}) {
+  const file = path.join(process.cwd(), 'data', 'route-decisions.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  const topCandidates = ranked
+    .slice(0, 5)
+    .map((candidate) => ({
+      routeType: candidate?.opp?.type || 'none',
+      path: candidate?.opp?.path || [],
+      netProfitUsd: +(candidate?.opp?.netProfitUsd || 0).toFixed(4),
+      tradeAmountUsd: +(candidate?.opp?.tradeAmountUsd || 0).toFixed(4),
+      riskPass: Boolean(candidate?.risk?.pass),
+      riskReason: candidate?.risk?.reason || 'unknown',
+      routingScoreUsd: +(candidate?.routing?.routingScoreUsd || 0).toFixed(4),
+      estimatedNetAfterExecutionUsd: +(candidate?.routing?.estimatedNetAfterExecutionUsd || 0).toFixed(4),
+      estimatedExecutionCostUsd: +(candidate?.routing?.estimatedExecutionCostUsd || 0).toFixed(6)
+    }));
+
+  fs.appendFileSync(
+    file,
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      mode,
+      autopilot,
+      phase,
+      consideredCount: opportunities.length,
+      selected: {
+        routeType: selected?.opp?.type || 'none',
+        path: selected?.opp?.path || [],
+        riskPass: Boolean(selected?.risk?.pass),
+        riskReason: selected?.risk?.reason || 'none',
+        routingScoreUsd: +(selected?.routing?.routingScoreUsd || 0).toFixed(4),
+        netProfitUsd: +(selected?.opp?.netProfitUsd || 0).toFixed(4)
+      },
+      topCandidates
+    }) + '\n'
+  );
+}
+
 function readExecutionLedger(limit = 200) {
   const file = path.join(process.cwd(), 'data', 'executions.jsonl');
   if (!fs.existsSync(file)) return [];
@@ -1951,6 +1997,14 @@ function runOnce() {
       const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
       const routePlan = buildBestPathPlan(assessed);
       selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
+      appendRouteDecisionRecord({
+        selected,
+        ranked: routePlan.ranked,
+        opportunities,
+        autopilot: state.autopilot,
+        mode: state.session.mode,
+        phase: 'sync'
+      });
     } catch (err) {
       const failRecord = {
         ts: new Date().toISOString(),
@@ -2062,6 +2116,14 @@ async function runOnceAsync() {
       const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
       const routePlan = buildBestPathPlan(assessed);
       selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
+      appendRouteDecisionRecord({
+        selected,
+        ranked: routePlan.ranked,
+        opportunities,
+        autopilot: state.autopilot,
+        mode: state.session.mode,
+        phase: 'async'
+      });
     } catch (err) {
       const failRecord = {
         ts: new Date().toISOString(),
