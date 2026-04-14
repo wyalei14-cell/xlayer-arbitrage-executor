@@ -20,6 +20,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - file-watch listeners (`fs.watchFile`) keep `ws-quotes` + `mempool` overlays hot in memory
   - scanner consumes cached overlays without per-scan file parse
   - stale signal filter drops old websocket/mempool events before routing/profit math (fail-closed freshness)
+  - **execution guard now fail-closes** when websocket/mempool listener timestamps go stale (no auto-fill on old stream state)
   - listener health metadata exposed in `runtimeSignals` (`listenerMode`, `wsUpdatedAt`, `mempoolUpdatedAt`, stale-drop counters)
 - Arbitrage scanner:
   - two-pool arbitrage with per-venue spread modeling

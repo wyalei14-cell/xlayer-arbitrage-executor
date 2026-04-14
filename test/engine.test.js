@@ -28,6 +28,7 @@ const {
   getPnlMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
+  staleSignalExecutionGuard,
   resetStreamingSignalCache
 } = require('../src/engine');
 
@@ -623,6 +624,76 @@ test('evaluateRuntimeAlerts raises stale streaming signal warnings when listener
   const out = evaluateRuntimeAlerts({ rows: [], metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 }, runtimeState });
   assert.ok(out.alerts.some((a) => a.code === 'ws-signal-stale'));
   assert.ok(out.alerts.some((a) => a.code === 'mempool-signal-stale'));
+});
+
+test('staleSignalExecutionGuard blocks execution when streaming overlays are stale', () => {
+  const staleIso = new Date(Date.now() - 60_000).toISOString();
+  const prev = {
+    enableStreamingSignals: state.config.enableStreamingSignals,
+    maxWsSignalAgeMs: state.config.maxWsSignalAgeMs,
+    maxMempoolSignalAgeMs: state.config.maxMempoolSignalAgeMs,
+    listenerMode: state.runtimeSignals.listenerMode,
+    wsUpdatedAt: state.runtimeSignals.wsUpdatedAt,
+    mempoolUpdatedAt: state.runtimeSignals.mempoolUpdatedAt
+  };
+
+  state.config.enableStreamingSignals = true;
+  state.config.maxWsSignalAgeMs = 10_000;
+  state.config.maxMempoolSignalAgeMs = 10_000;
+  state.runtimeSignals.listenerMode = 'watch';
+  state.runtimeSignals.wsUpdatedAt = staleIso;
+  state.runtimeSignals.mempoolUpdatedAt = staleIso;
+
+  const out = staleSignalExecutionGuard(state);
+  assert.equal(out.pass, false);
+  assert.match(out.reason, /stale-streaming-signal/);
+
+  state.config.enableStreamingSignals = prev.enableStreamingSignals;
+  state.config.maxWsSignalAgeMs = prev.maxWsSignalAgeMs;
+  state.config.maxMempoolSignalAgeMs = prev.maxMempoolSignalAgeMs;
+  state.runtimeSignals.listenerMode = prev.listenerMode;
+  state.runtimeSignals.wsUpdatedAt = prev.wsUpdatedAt;
+  state.runtimeSignals.mempoolUpdatedAt = prev.mempoolUpdatedAt;
+});
+
+test('executeOpportunity fail-closes when streaming overlays become stale', () => {
+  const staleIso = new Date(Date.now() - 60_000).toISOString();
+  const prev = {
+    enableStreamingSignals: state.config.enableStreamingSignals,
+    maxWsSignalAgeMs: state.config.maxWsSignalAgeMs,
+    maxMempoolSignalAgeMs: state.config.maxMempoolSignalAgeMs,
+    listenerMode: state.runtimeSignals.listenerMode,
+    wsUpdatedAt: state.runtimeSignals.wsUpdatedAt,
+    mempoolUpdatedAt: state.runtimeSignals.mempoolUpdatedAt,
+    mode: state.session.mode
+  };
+
+  state.config.enableStreamingSignals = true;
+  state.config.maxWsSignalAgeMs = 10_000;
+  state.config.maxMempoolSignalAgeMs = 10_000;
+  state.runtimeSignals.listenerMode = 'watch';
+  state.runtimeSignals.wsUpdatedAt = staleIso;
+  state.runtimeSignals.mempoolUpdatedAt = staleIso;
+  setMode('live');
+
+  const out = executeOpportunity({
+    path: ['USDC->OKB@A', 'OKB->USDC@B'],
+    legs: [{ liqUsd: 100000 }, { liqUsd: 100000 }],
+    tradeAmountUsd: 100,
+    slippageUsd: 0.4,
+    netProfitUsd: 8
+  });
+
+  assert.equal(out.success, false);
+  assert.match(out.reason, /stale-streaming-signal/);
+
+  state.config.enableStreamingSignals = prev.enableStreamingSignals;
+  state.config.maxWsSignalAgeMs = prev.maxWsSignalAgeMs;
+  state.config.maxMempoolSignalAgeMs = prev.maxMempoolSignalAgeMs;
+  state.runtimeSignals.listenerMode = prev.listenerMode;
+  state.runtimeSignals.wsUpdatedAt = prev.wsUpdatedAt;
+  state.runtimeSignals.mempoolUpdatedAt = prev.mempoolUpdatedAt;
+  setMode(prev.mode);
 });
 
 test('runPaperSoak executes requested iterations and restores prior session state', async () => {

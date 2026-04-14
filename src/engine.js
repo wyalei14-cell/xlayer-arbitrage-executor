@@ -879,8 +879,34 @@ function buildBestPathPlan(assessedOpportunities = []) {
   };
 }
 
+function staleSignalExecutionGuard(runtimeState = state) {
+  const staleAlerts = collectStreamingStaleAlerts(runtimeState);
+  if (!staleAlerts.length) return { pass: true, reason: 'ok' };
+
+  return {
+    pass: false,
+    reason: `stale-streaming-signal:${staleAlerts.map((x) => x.code).join(',')}`,
+    alerts: staleAlerts
+  };
+}
+
 function executeOpportunity(opp) {
   const rechecked = { ...opp, recheckTs: now() };
+  const signalGuard = staleSignalExecutionGuard(state);
+
+  if (!signalGuard.pass) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: signalGuard.reason,
+      gasCostUsd: 0,
+      executionCostUsd: 0,
+      netAfterGasUsd: 0,
+      netAfterAllCostsUsd: 0,
+      signalGuard
+    };
+  }
 
   if (state.session.mode === 'paper') {
     const preflight = state.config.preflightInPaper
@@ -1072,6 +1098,42 @@ function getPnlMetrics({ limit = 200 } = {}) {
   };
 }
 
+function collectStreamingStaleAlerts(runtimeState, nowTs = now()) {
+  const runtimeSignals = runtimeState.runtimeSignals || {};
+  const alerts = [];
+
+  if (!(runtimeState.config.enableStreamingSignals && runtimeSignals.listenerMode === 'watch')) {
+    return alerts;
+  }
+
+  const wsUpdatedAt = runtimeSignals.wsUpdatedAt ? Date.parse(runtimeSignals.wsUpdatedAt) : NaN;
+  const mempoolUpdatedAt = runtimeSignals.mempoolUpdatedAt ? Date.parse(runtimeSignals.mempoolUpdatedAt) : NaN;
+
+  const wsStaleAgeMs = Number(runtimeState.config.maxWsSignalAgeMs || 0) * 2;
+  if (Number.isFinite(wsUpdatedAt) && wsStaleAgeMs > 0 && nowTs - wsUpdatedAt > wsStaleAgeMs) {
+    alerts.push({
+      level: 'warning',
+      code: 'ws-signal-stale',
+      message: `Websocket quote overlay stale for ${nowTs - wsUpdatedAt}ms`,
+      value: nowTs - wsUpdatedAt,
+      threshold: wsStaleAgeMs
+    });
+  }
+
+  const mempoolStaleAgeMs = Number(runtimeState.config.maxMempoolSignalAgeMs || 0) * 2;
+  if (Number.isFinite(mempoolUpdatedAt) && mempoolStaleAgeMs > 0 && nowTs - mempoolUpdatedAt > mempoolStaleAgeMs) {
+    alerts.push({
+      level: 'warning',
+      code: 'mempool-signal-stale',
+      message: `Mempool overlay stale for ${nowTs - mempoolUpdatedAt}ms`,
+      value: nowTs - mempoolUpdatedAt,
+      threshold: mempoolStaleAgeMs
+    });
+  }
+
+  return alerts;
+}
+
 function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
   const alerts = [];
   const recentRows = rows.slice(-Math.max(1, runtimeState.config.alertWindow));
@@ -1135,33 +1197,7 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
     });
   }
 
-  if (runtimeState.config.enableStreamingSignals && runtimeSignals.listenerMode === 'watch') {
-    const nowTs = now();
-    const wsUpdatedAt = runtimeSignals.wsUpdatedAt ? Date.parse(runtimeSignals.wsUpdatedAt) : NaN;
-    const mempoolUpdatedAt = runtimeSignals.mempoolUpdatedAt ? Date.parse(runtimeSignals.mempoolUpdatedAt) : NaN;
-
-    const wsStaleAgeMs = Number(runtimeState.config.maxWsSignalAgeMs || 0) * 2;
-    if (Number.isFinite(wsUpdatedAt) && wsStaleAgeMs > 0 && nowTs - wsUpdatedAt > wsStaleAgeMs) {
-      alerts.push({
-        level: 'warning',
-        code: 'ws-signal-stale',
-        message: `Websocket quote overlay stale for ${nowTs - wsUpdatedAt}ms`,
-        value: nowTs - wsUpdatedAt,
-        threshold: wsStaleAgeMs
-      });
-    }
-
-    const mempoolStaleAgeMs = Number(runtimeState.config.maxMempoolSignalAgeMs || 0) * 2;
-    if (Number.isFinite(mempoolUpdatedAt) && mempoolStaleAgeMs > 0 && nowTs - mempoolUpdatedAt > mempoolStaleAgeMs) {
-      alerts.push({
-        level: 'warning',
-        code: 'mempool-signal-stale',
-        message: `Mempool overlay stale for ${nowTs - mempoolUpdatedAt}ms`,
-        value: nowTs - mempoolUpdatedAt,
-        threshold: mempoolStaleAgeMs
-      });
-    }
-  }
+  alerts.push(...collectStreamingStaleAlerts(runtimeState));
 
   return {
     ts: new Date().toISOString(),
@@ -1492,6 +1528,8 @@ module.exports = {
   getPnlMetrics,
   evaluateRuntimeAlerts,
   getAlertStatus,
+  collectStreamingStaleAlerts,
+  staleSignalExecutionGuard,
   startStreamingSignalListeners,
   resetStreamingSignalCache
 };
