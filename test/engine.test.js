@@ -550,6 +550,22 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
     ].join('\n') + '\n'
   );
 
+  fs.writeFileSync(
+    preflightFile,
+    [
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        telemetry: {
+          stages: [
+            { name: 'wallet', durationMs: 10 },
+            { name: 'router', durationMs: 12 },
+            { name: 'gateway-preflight', durationMs: 18 }
+          ]
+        }
+      })
+    ].join('\n') + '\n'
+  );
+
   const text = getPrometheusMetrics();
   assert.match(text, /xlayer_arbitrage_realized_pnl_usd/);
   assert.match(text, /xlayer_arbitrage_execution_rate/);
@@ -558,6 +574,8 @@ test('getPrometheusMetrics exposes pnl, execution, alert and runtime gauges', ()
   assert.match(text, /xlayer_arbitrage_runtime_signal_dropped_total\{stream="ws"\}/);
   assert.match(text, /xlayer_arbitrage_gas_pressure_multiplier/);
   assert.match(text, /xlayer_arbitrage_preflight_latency_ms_avg/);
+  assert.match(text, /xlayer_arbitrage_preflight_stage_samples/);
+  assert.match(text, /xlayer_arbitrage_preflight_stage_latency_ms_avg\{stage="wallet"\}/);
   assert.match(text, /xlayer_arbitrage_execution_lock_active/);
 });
 

@@ -3,6 +3,7 @@ const path = require('path');
 
 const RUNTIME_STATE_FILE = path.join(process.cwd(), 'data', 'runtime-state.json');
 const EXECUTION_LOCK_FILE = path.join(process.cwd(), 'data', 'execution-lock.json');
+const PREFLIGHT_FILE = path.join(process.cwd(), 'data', 'preflight.jsonl');
 
 const streamingCache = {
   initialized: false,
@@ -1417,7 +1418,7 @@ function appendRecord(obj) {
 
 function appendPreflightRecord(preflight, opp = null, context = {}) {
   if (!preflight || !preflight.telemetry) return;
-  const file = path.join(process.cwd(), 'data', 'preflight.jsonl');
+  const file = PREFLIGHT_FILE;
   fs.mkdirSync(path.dirname(file), { recursive: true });
 
   fs.appendFileSync(
@@ -1434,6 +1435,51 @@ function appendPreflightRecord(preflight, opp = null, context = {}) {
       telemetry: preflight.telemetry
     }) + '\n'
   );
+}
+
+function getPreflightStageMetrics(limit = 100) {
+  const out = {
+    sampleSize: 0,
+    stageAveragesMs: {}
+  };
+
+  if (!fs.existsSync(PREFLIGHT_FILE)) return out;
+
+  try {
+    const rows = fs.readFileSync(PREFLIGHT_FILE, 'utf8').trim().split('\n').filter(Boolean).slice(-limit);
+    const stageDurations = new Map();
+
+    for (const line of rows) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+
+      const stages = parsed?.telemetry?.stages;
+      if (!Array.isArray(stages)) continue;
+      out.sampleSize += 1;
+
+      for (const stage of stages) {
+        const name = stage?.name;
+        const durationMs = Number(stage?.durationMs);
+        if (typeof name !== 'string' || !Number.isFinite(durationMs) || durationMs < 0) continue;
+        if (!stageDurations.has(name)) stageDurations.set(name, []);
+        stageDurations.get(name).push(durationMs);
+      }
+    }
+
+    for (const [name, values] of stageDurations.entries()) {
+      if (!values.length) continue;
+      const avgMs = values.reduce((sum, value) => sum + value, 0) / values.length;
+      out.stageAveragesMs[name] = +avgMs.toFixed(2);
+    }
+  } catch (_) {
+    // fail-closed: return empty metrics if log cannot be parsed
+  }
+
+  return out;
 }
 
 function appendRouteDecisionRecord({
@@ -1965,6 +2011,7 @@ function getPrometheusMetrics() {
   const runtimeSignals = state.runtimeSignals || {};
   const alertStats = alertStatus.stats || {};
   const executionLockActive = runtimeSignals.executionLockActive ? 1 : 0;
+  const preflightStageMetrics = getPreflightStageMetrics(100);
 
   const lines = [
     '# HELP xlayer_arbitrage_realized_pnl_usd Total realized pnl in USD from execution ledger.',
@@ -2015,6 +2062,11 @@ function getPrometheusMetrics() {
     '# HELP xlayer_arbitrage_preflight_latency_ms_avg Rolling average Wallet->DEX->Security->Gateway preflight latency.',
     '# TYPE xlayer_arbitrage_preflight_latency_ms_avg gauge',
     `xlayer_arbitrage_preflight_latency_ms_avg ${Number(alertStats.avgPreflightLatencyMs || 0)}`,
+    '# HELP xlayer_arbitrage_preflight_stage_latency_ms_avg Average preflight stage latency from preflight trace log.',
+    '# TYPE xlayer_arbitrage_preflight_stage_latency_ms_avg gauge',
+    '# HELP xlayer_arbitrage_preflight_stage_samples Number of recent preflight rows used for stage metrics.',
+    '# TYPE xlayer_arbitrage_preflight_stage_samples gauge',
+    `xlayer_arbitrage_preflight_stage_samples ${Number(preflightStageMetrics.sampleSize || 0)}`,
     '# HELP xlayer_arbitrage_execution_lock_active Execution lock state (1 active, 0 inactive).',
     '# TYPE xlayer_arbitrage_execution_lock_active gauge',
     `xlayer_arbitrage_execution_lock_active ${executionLockActive}`,
@@ -2022,6 +2074,11 @@ function getPrometheusMetrics() {
     '# TYPE xlayer_arbitrage_execution_lock_age_ms gauge',
     `xlayer_arbitrage_execution_lock_age_ms ${Number(runtimeSignals.executionLockAgeMs || 0)}`
   ];
+
+  for (const [stageName, avgMs] of Object.entries(preflightStageMetrics.stageAveragesMs || {})) {
+    const sanitizedStage = String(stageName).replace(/"/g, '\\"');
+    lines.push(`xlayer_arbitrage_preflight_stage_latency_ms_avg{stage="${sanitizedStage}"} ${Number(avgMs)}`);
+  }
 
   return `${lines.join('\n')}\n`;
 }
