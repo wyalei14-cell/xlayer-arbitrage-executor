@@ -73,6 +73,7 @@ const state = {
     maxExecutionGasCostShare: Number(process.env.MAX_EXECUTION_GAS_COST_SHARE || 0.7),
     alertMaxGasPressureMultiplier: Number(process.env.ALERT_MAX_GAS_PRESSURE_MULTIPLIER || 1.6),
     alertMaxPreflightLatencyMs: Number(process.env.ALERT_MAX_PREFLIGHT_LATENCY_MS || 2_500),
+    maxPreflightLatencyMs: Number(process.env.MAX_PREFLIGHT_LATENCY_MS || 5_000),
     alertMaxDailyLossUsd: Number(process.env.ALERT_MAX_DAILY_LOSS_USD || -20),
     maxDailyLossUsd: Number(process.env.MAX_DAILY_LOSS_USD || -30),
     alertDedupWindowMs: Number(process.env.ALERT_DEDUP_WINDOW_MS || 60_000),
@@ -789,6 +790,13 @@ function estimateGasCostUsd(gatewayEstimate) {
   return +(baseGasUsd * state.config.gasSafetyMultiplier * mempoolMultiplier).toFixed(6);
 }
 
+function exceedsPreflightLatency(preflight) {
+  const latencyMs = Number(preflight?.telemetry?.durationMs || 0);
+  const thresholdMs = Number(state.config.maxPreflightLatencyMs || 0);
+  if (!(thresholdMs >= 0)) return false;
+  return latencyMs > thresholdMs;
+}
+
 function evaluateExecutionEconomics(opp, preflight) {
   const grossNetUsd = Number(opp?.netProfitUsd || 0);
   const tradeAmountUsd = Number(opp?.tradeAmountUsd || 0);
@@ -1146,6 +1154,20 @@ function executeOpportunity(opp) {
       };
     }
 
+    if (exceedsPreflightLatency(preflight)) {
+      return {
+        success: false,
+        txHash: null,
+        realizedProfitUsd: 0,
+        reason: 'preflight-latency-too-high',
+        gasCostUsd: economics.gasCostUsd,
+        netAfterGasUsd: economics.netAfterGasUsd,
+        executionCostUsd: economics.executionCostUsd,
+        netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+        preflight
+      };
+    }
+
     if (economics.netAfterAllCostsUsd < state.config.minNetProfitUsd) {
       return {
         success: false,
@@ -1201,6 +1223,20 @@ function executeOpportunity(opp) {
       netAfterGasUsd: economics.netAfterGasUsd,
         executionCostUsd: economics.executionCostUsd,
         netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
+      preflight
+    };
+  }
+
+  if (exceedsPreflightLatency(preflight)) {
+    return {
+      success: false,
+      txHash: null,
+      realizedProfitUsd: 0,
+      reason: 'preflight-latency-too-high',
+      gasCostUsd: economics.gasCostUsd,
+      netAfterGasUsd: economics.netAfterGasUsd,
+      executionCostUsd: economics.executionCostUsd,
+      netAfterAllCostsUsd: economics.netAfterAllCostsUsd,
       preflight
     };
   }
@@ -2144,6 +2180,7 @@ module.exports = {
   startStreamingSignalListeners,
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
-  shouldNotifyAlertSnapshot
+  shouldNotifyAlertSnapshot,
+  exceedsPreflightLatency
 };
 

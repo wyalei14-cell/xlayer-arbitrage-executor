@@ -50,6 +50,7 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - **atomic preference path**: bundle-first execution plan with flash-loan-ready funding mode selection
   - **paper/live adapter parity**: paper mode also runs preflight (mock/live adapters) before fill
   - fail-closed preflight guard (blocks execution if any integration check fails, including atomic unavailability)
+  - hard preflight latency guard (`MAX_PREFLIGHT_LATENCY_MS`) fail-closes slow execution plans before send
   - fail-closed gas-risk guard (blocks execution when gas cost share exceeds configured edge threshold)
   - tx hash + realized pnl record
 - Loop mode:
@@ -133,6 +134,7 @@ node src/cli.js wallet-logout
 - `STREAMING_BOOTSTRAP_GRACE_MS=30000` (fail-closed bootstrap grace window; block execution if websocket/mempool listeners produce no fresh updates after this window)
 - `ALERT_MAX_GAS_PRESSURE_MULTIPLIER=1.6` (critical alert threshold for mempool-driven gas multiplier)
 - `ALERT_MAX_PREFLIGHT_LATENCY_MS=2500` (warning threshold for rolling average Wallet→DEX→Security→Gateway preflight latency)
+- `MAX_PREFLIGHT_LATENCY_MS=5000` (hard fail-closed cap: block execution when single preflight latency exceeds threshold)
 - `ALERT_MAX_DAILY_LOSS_USD=-20` (warning threshold for rolling 24h realized PnL drawdown)
 - `MAX_DAILY_LOSS_USD=-30` (critical fail-closed cap for rolling 24h realized PnL; breaches pause execution)
 - `ALERT_DEDUP_WINDOW_MS=60000` (suppresses duplicate alert snapshots with the same signature inside the window)
@@ -173,6 +175,7 @@ Default runtime risk config in `src/engine.js`:
 - `maxExecutionGasCostShare` (default `0.7`) hard fail-closed cap for per-trade gas share gating before send
 - `alertMaxGasPressureMultiplier` (default `1.6`) critical alert when mempool-driven gas multiplier spikes
 - `alertMaxPreflightLatencyMs` (default `2500`) warning alert when recent average preflight latency is degraded
+- `maxPreflightLatencyMs` (default `5000`) hard fail-closed per-trade preflight timeout gate
 - `alertMaxDailyLossUsd` (default `-20`) warning threshold for rolling 24h realized PnL drawdown
 - `maxDailyLossUsd` (default `-30`) critical rolling 24h realized PnL loss cap; triggers execution fail-close
 - `alertDedupWindowMs` (default `60000`) deduplicates repeated alert signatures in the alert log window

@@ -35,7 +35,8 @@ const {
   startStreamingSignalListeners,
   resetStreamingSignalCache,
   resetAlertSnapshotCache,
-  shouldNotifyAlertSnapshot
+  shouldNotifyAlertSnapshot,
+  exceedsPreflightLatency
 } = require('../src/engine');
 
 const runtimeStateFile = path.join(process.cwd(), 'data', 'runtime-state.json');
@@ -341,6 +342,17 @@ test('executeOpportunity fail-closes when gateway estimate is missing gas limit'
 
   if (prev === undefined) delete process.env.GATEWAY_FORCE_MISSING_GAS;
   else process.env.GATEWAY_FORCE_MISSING_GAS = prev;
+});
+
+test('exceedsPreflightLatency enforces hard preflight timeout threshold', () => {
+  const prevMax = state.config.maxPreflightLatencyMs;
+  try {
+    state.config.maxPreflightLatencyMs = 250;
+    assert.equal(exceedsPreflightLatency({ telemetry: { durationMs: 200 } }), false);
+    assert.equal(exceedsPreflightLatency({ telemetry: { durationMs: 251 } }), true);
+  } finally {
+    state.config.maxPreflightLatencyMs = prevMax;
+  }
 });
 
 test('executeOpportunity blocks when gas-adjusted net profit is below threshold', () => {
