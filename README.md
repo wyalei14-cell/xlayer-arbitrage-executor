@@ -54,7 +54,8 @@ NIUMA skill/project scaffold for automated arbitrage execution on X Layer.
   - tx hash + realized pnl record
 - Loop mode:
   - adaptive interval loop (`setTimeout` so optimization affects next cycle)
-  - **critical-alert circuit breaker**: autopilot fails closed before execution when critical runtime alerts are active (failure streak, missing live wallet session, high gas pressure)
+  - **single-flight execution lock** prevents overlapping scans/executions (fail-closed when a prior run is still active)
+  - **critical-alert circuit breaker**: autopilot fails closed before execution when critical runtime alerts are active (failure streak, missing live wallet session, high gas pressure, stuck execution lock)
 - Opportunity + operations API:
   - `GET /opportunities`
   - `GET /metrics` (PnL ledger aggregates + recent execution window)
@@ -136,6 +137,7 @@ node src/cli.js wallet-logout
 - `ALERT_NOTIFY_MIN_LEVEL=critical|warning|info` (minimum level sent to webhook; default `critical`)
 - `ALERT_NOTIFY_TIMEOUT_MS=3000` (webhook delivery timeout, non-blocking)
 - `FAIL_CLOSED_ON_CRITICAL_ALERTS=true|false` (autopilot execution circuit breaker)
+- `EXECUTION_LOCK_TTL_MS=120000` (single-flight lock TTL; overlapping runs fail-closed and stale lock is alerted as critical)
 - `data/ws-quotes.json` (optional websocket quote snapshot overlay array)
 - `data/mempool.json` (optional pending tx array for mempool pressure model)
 
@@ -172,6 +174,7 @@ Default runtime risk config in `src/engine.js`:
 - `alertNotifyMinLevel` (default `critical`) escalation threshold for webhook notifications
 - `alertNotifyTimeoutMs` (default `3000`) webhook timeout; delivery is non-blocking
 - `failClosedOnCriticalAlerts` (default `true`) blocks autopilot execution when critical runtime alerts are active
+- `executionLockTtlMs` (default `120000`) marks overlapping or hung run protection window for single-flight execution
 
 ## Data output
 Execution log file:

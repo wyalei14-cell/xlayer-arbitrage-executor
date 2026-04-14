@@ -21,6 +21,11 @@ const alertCache = {
   lastTs: 0
 };
 
+const executionLock = {
+  active: false,
+  sinceMs: 0
+};
+
 const state = {
   autopilot: false,
   config: {
@@ -71,7 +76,8 @@ const state = {
     failClosedOnCriticalAlerts: String(process.env.FAIL_CLOSED_ON_CRITICAL_ALERTS || 'true') === 'true',
     alertNotifyWebhookUrl: process.env.ALERT_NOTIFY_WEBHOOK_URL || '',
     alertNotifyMinLevel: String(process.env.ALERT_NOTIFY_MIN_LEVEL || 'critical').toLowerCase(),
-    alertNotifyTimeoutMs: Number(process.env.ALERT_NOTIFY_TIMEOUT_MS || 3000)
+    alertNotifyTimeoutMs: Number(process.env.ALERT_NOTIFY_TIMEOUT_MS || 3000),
+    executionLockTtlMs: Number(process.env.EXECUTION_LOCK_TTL_MS || 120_000)
   },
   session: {
     mode: 'paper',
@@ -92,7 +98,10 @@ const state = {
     listenerMode: 'poll',
     listenersStartedAt: null,
     wsUpdatedAt: null,
-    mempoolUpdatedAt: null
+    mempoolUpdatedAt: null,
+    executionLockActive: false,
+    executionLockSince: null,
+    executionLockAgeMs: 0
   }
 };
 
@@ -1477,6 +1486,19 @@ function evaluateRuntimeAlerts({ rows, metrics, runtimeState = state }) {
     });
   }
 
+  const lockActive = Boolean(runtimeSignals.executionLockActive);
+  const lockAgeMs = Number(runtimeSignals.executionLockAgeMs || 0);
+  const lockTtlMs = Number(runtimeState.config.executionLockTtlMs || 0);
+  if (lockActive && lockTtlMs > 0 && lockAgeMs > lockTtlMs) {
+    alerts.push({
+      level: 'critical',
+      code: 'execution-lock-stuck',
+      message: `Execution lock active for ${lockAgeMs}ms (ttl ${lockTtlMs}ms)`,
+      value: lockAgeMs,
+      threshold: lockTtlMs
+    });
+  }
+
   alerts.push(...collectStreamingStaleAlerts(runtimeState));
 
   return {
@@ -1595,7 +1617,21 @@ function appendAlertSnapshot(snapshot) {
   notifyAlertWebhook(snapshot);
 }
 
+function syncExecutionLockSignal() {
+  if (!executionLock.active) {
+    state.runtimeSignals.executionLockActive = false;
+    state.runtimeSignals.executionLockSince = null;
+    state.runtimeSignals.executionLockAgeMs = 0;
+    return;
+  }
+
+  state.runtimeSignals.executionLockActive = true;
+  state.runtimeSignals.executionLockSince = new Date(executionLock.sinceMs).toISOString();
+  state.runtimeSignals.executionLockAgeMs = Math.max(0, now() - executionLock.sinceMs);
+}
+
 function getAlertStatus() {
+  syncExecutionLockSignal();
   const rows = readExecutionLedger(state.config.alertWindow);
   const metrics = getPnlMetrics({ limit: state.config.alertWindow });
   return evaluateRuntimeAlerts({ rows, metrics, runtimeState: state });
@@ -1731,6 +1767,36 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
 }
 
+function acquireExecutionLock() {
+  const ts = now();
+  const ttlMs = Math.max(1_000, Number(state.config.executionLockTtlMs || 120_000));
+
+  if (executionLock.active) {
+    const ageMs = ts - executionLock.sinceMs;
+    if (ageMs <= ttlMs) {
+      state.runtimeSignals.executionLockActive = true;
+      state.runtimeSignals.executionLockSince = new Date(executionLock.sinceMs).toISOString();
+      state.runtimeSignals.executionLockAgeMs = ageMs;
+      return { ok: false, reason: 'execution-lock-active', ageMs, ttlMs };
+    }
+  }
+
+  executionLock.active = true;
+  executionLock.sinceMs = ts;
+  state.runtimeSignals.executionLockActive = true;
+  state.runtimeSignals.executionLockSince = new Date(ts).toISOString();
+  state.runtimeSignals.executionLockAgeMs = 0;
+  return { ok: true, reason: 'ok' };
+}
+
+function releaseExecutionLock() {
+  executionLock.active = false;
+  executionLock.sinceMs = 0;
+  state.runtimeSignals.executionLockActive = false;
+  state.runtimeSignals.executionLockSince = null;
+  state.runtimeSignals.executionLockAgeMs = 0;
+}
+
 async function runPaperSoak({ iterations = 20, intervalMs = 1000, stopOnCritical = true } = {}) {
   const targetIterations = Math.max(1, Number(iterations) || 1);
   const pauseMs = Math.max(0, Number(intervalMs) || 0);
@@ -1782,15 +1848,8 @@ async function runPaperSoak({ iterations = 20, intervalMs = 1000, stopOnCritical
 }
 
 function runOnce() {
-  let opportunities = [];
-  let selected = null;
-
-  try {
-    opportunities = scanOpportunities();
-    const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
-    const routePlan = buildBestPathPlan(assessed);
-    selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
-  } catch (err) {
+  const lock = acquireExecutionLock();
+  if (!lock.ok) {
     const failRecord = {
       ts: new Date().toISOString(),
       routeType: 'none',
@@ -1804,7 +1863,7 @@ function runOnce() {
       success: false,
       realizedProfitUsd: 0,
       mode: state.session.mode,
-      reason: `scan-error:${err.message}`
+      reason: `${lock.reason}:${lock.ageMs}ms>${lock.ttlMs}ms`
     };
     appendRecord(failRecord);
     const alerts = getAlertStatus();
@@ -1812,69 +1871,96 @@ function runOnce() {
     return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   }
 
-  let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
-  if (selected.risk.pass && state.autopilot) {
-    const preExecutionAlerts = getAlertStatus();
-    const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+  try {
+    let opportunities = [];
+    let selected = null;
 
-    if (!circuit.pass) {
-      result = {
-        success: false,
+    try {
+      opportunities = scanOpportunities();
+      const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
+      const routePlan = buildBestPathPlan(assessed);
+      selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
+    } catch (err) {
+      const failRecord = {
+        ts: new Date().toISOString(),
+        routeType: 'none',
+        path: [],
+        quoteSnapshot: null,
+        grossProfitUsd: 0,
+        feeUsd: 0,
+        slippageUsd: 0,
+        netProfitUsd: 0,
         txHash: null,
+        success: false,
         realizedProfitUsd: 0,
-        reason: circuit.reason,
-        circuitBreaker: circuit,
-        preExecutionAlerts
+        mode: state.session.mode,
+        reason: `scan-error:${err.message}`
       };
-    } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
-      result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
-    } else {
-      result = executeOpportunity(selected.opp);
+      appendRecord(failRecord);
+      const alerts = getAlertStatus();
+      appendAlertSnapshot(alerts);
+      return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
     }
+
+    let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
+    if (selected.risk.pass && state.autopilot) {
+      const preExecutionAlerts = getAlertStatus();
+      const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+
+      if (!circuit.pass) {
+        result = {
+          success: false,
+          txHash: null,
+          realizedProfitUsd: 0,
+          reason: circuit.reason,
+          circuitBreaker: circuit,
+          preExecutionAlerts
+        };
+      } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+        result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
+      } else {
+        result = executeOpportunity(selected.opp);
+      }
+    }
+
+    const record = {
+      ts: new Date().toISOString(),
+      routeType: selected.opp?.type || 'none',
+      path: selected.opp?.path || [],
+      quoteSnapshot: selected.opp?.legs || null,
+      grossProfitUsd: selected.opp?.grossProfitUsd || 0,
+      feeUsd: selected.opp?.feeUsd || 0,
+      slippageUsd: selected.opp?.slippageUsd || 0,
+      netProfitUsd: selected.opp?.netProfitUsd || 0,
+      routingScoreUsd: selected.routing?.routingScoreUsd || 0,
+      routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
+      routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
+      gasCostUsd: result.gasCostUsd || 0,
+      executionCostUsd: result.executionCostUsd || 0,
+      netAfterGasUsd: result.netAfterGasUsd || 0,
+      netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
+      tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
+      consideredCount: opportunities.length,
+      mode: state.session.mode,
+      walletAddress: state.session.wallet.address,
+      onchainPreflight: result.preflight || null,
+      runtimeSignals: state.runtimeSignals,
+      ...result
+    };
+    appendRecord(record);
+    optimizeFromHistory();
+    const alerts = getAlertStatus();
+    appendAlertSnapshot(alerts);
+
+    return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
+  } finally {
+    releaseExecutionLock();
   }
-
-  const record = {
-    ts: new Date().toISOString(),
-    routeType: selected.opp?.type || 'none',
-    path: selected.opp?.path || [],
-    quoteSnapshot: selected.opp?.legs || null,
-    grossProfitUsd: selected.opp?.grossProfitUsd || 0,
-    feeUsd: selected.opp?.feeUsd || 0,
-    slippageUsd: selected.opp?.slippageUsd || 0,
-    netProfitUsd: selected.opp?.netProfitUsd || 0,
-    routingScoreUsd: selected.routing?.routingScoreUsd || 0,
-    routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
-    routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
-    gasCostUsd: result.gasCostUsd || 0,
-    executionCostUsd: result.executionCostUsd || 0,
-    netAfterGasUsd: result.netAfterGasUsd || 0,
-    netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
-    tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
-    consideredCount: opportunities.length,
-    mode: state.session.mode,
-    walletAddress: state.session.wallet.address,
-    onchainPreflight: result.preflight || null,
-    runtimeSignals: state.runtimeSignals,
-    ...result
-  };
-  appendRecord(record);
-  optimizeFromHistory();
-  const alerts = getAlertStatus();
-  appendAlertSnapshot(alerts);
-
-  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
 }
 
 async function runOnceAsync() {
-  let opportunities = [];
-  let selected = null;
-
-  try {
-    opportunities = await scanOpportunitiesAsync();
-    const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
-    const routePlan = buildBestPathPlan(assessed);
-    selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
-  } catch (err) {
+  const lock = acquireExecutionLock();
+  if (!lock.ok) {
     const failRecord = {
       ts: new Date().toISOString(),
       routeType: 'none',
@@ -1888,7 +1974,7 @@ async function runOnceAsync() {
       success: false,
       realizedProfitUsd: 0,
       mode: state.session.mode,
-      reason: `scan-error:${err.message}`
+      reason: `${lock.reason}:${lock.ageMs}ms>${lock.ttlMs}ms`
     };
     appendRecord(failRecord);
     const alerts = getAlertStatus();
@@ -1896,57 +1982,91 @@ async function runOnceAsync() {
     return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
   }
 
-  let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
-  if (selected.risk.pass && state.autopilot) {
-    const preExecutionAlerts = getAlertStatus();
-    const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+  try {
+    let opportunities = [];
+    let selected = null;
 
-    if (!circuit.pass) {
-      result = {
-        success: false,
+    try {
+      opportunities = await scanOpportunitiesAsync();
+      const assessed = opportunities.map((opp) => ({ opp, risk: riskCheck(opp) }));
+      const routePlan = buildBestPathPlan(assessed);
+      selected = routePlan.selected || assessed[0] || { opp: null, risk: { pass: false, reason: 'no-opportunity' }, routing: null };
+    } catch (err) {
+      const failRecord = {
+        ts: new Date().toISOString(),
+        routeType: 'none',
+        path: [],
+        quoteSnapshot: null,
+        grossProfitUsd: 0,
+        feeUsd: 0,
+        slippageUsd: 0,
+        netProfitUsd: 0,
         txHash: null,
+        success: false,
         realizedProfitUsd: 0,
-        reason: circuit.reason,
-        circuitBreaker: circuit,
-        preExecutionAlerts
+        mode: state.session.mode,
+        reason: `scan-error:${err.message}`
       };
-    } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
-      result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
-    } else {
-      result = executeOpportunity(selected.opp);
+      appendRecord(failRecord);
+      const alerts = getAlertStatus();
+      appendAlertSnapshot(alerts);
+      return { config: state.config, opportunities: [], record: failRecord, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
     }
+
+    let result = { success: false, txHash: null, realizedProfitUsd: 0, reason: selected.risk.reason };
+    if (selected.risk.pass && state.autopilot) {
+      const preExecutionAlerts = getAlertStatus();
+      const circuit = evaluateExecutionCircuitBreaker(preExecutionAlerts);
+
+      if (!circuit.pass) {
+        result = {
+          success: false,
+          txHash: null,
+          realizedProfitUsd: 0,
+          reason: circuit.reason,
+          circuitBreaker: circuit,
+          preExecutionAlerts
+        };
+      } else if (state.session.mode === 'live' && !state.session.wallet.loggedIn) {
+        result = { success: false, txHash: null, realizedProfitUsd: 0, reason: 'wallet-not-logged-in' };
+      } else {
+        result = executeOpportunity(selected.opp);
+      }
+    }
+
+    const record = {
+      ts: new Date().toISOString(),
+      routeType: selected.opp?.type || 'none',
+      path: selected.opp?.path || [],
+      quoteSnapshot: selected.opp?.legs || null,
+      grossProfitUsd: selected.opp?.grossProfitUsd || 0,
+      feeUsd: selected.opp?.feeUsd || 0,
+      slippageUsd: selected.opp?.slippageUsd || 0,
+      netProfitUsd: selected.opp?.netProfitUsd || 0,
+      routingScoreUsd: selected.routing?.routingScoreUsd || 0,
+      routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
+      routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
+      gasCostUsd: result.gasCostUsd || 0,
+      executionCostUsd: result.executionCostUsd || 0,
+      netAfterGasUsd: result.netAfterGasUsd || 0,
+      netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
+      tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
+      consideredCount: opportunities.length,
+      mode: state.session.mode,
+      walletAddress: state.session.wallet.address,
+      onchainPreflight: result.preflight || null,
+      runtimeSignals: state.runtimeSignals,
+      ...result
+    };
+    appendRecord(record);
+    optimizeFromHistory();
+    const alerts = getAlertStatus();
+    appendAlertSnapshot(alerts);
+
+    return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
+  } finally {
+    releaseExecutionLock();
   }
-
-  const record = {
-    ts: new Date().toISOString(),
-    routeType: selected.opp?.type || 'none',
-    path: selected.opp?.path || [],
-    quoteSnapshot: selected.opp?.legs || null,
-    grossProfitUsd: selected.opp?.grossProfitUsd || 0,
-    feeUsd: selected.opp?.feeUsd || 0,
-    slippageUsd: selected.opp?.slippageUsd || 0,
-    netProfitUsd: selected.opp?.netProfitUsd || 0,
-    routingScoreUsd: selected.routing?.routingScoreUsd || 0,
-    routingComplexityPenaltyUsd: selected.routing?.complexityPenaltyUsd || 0,
-    routingDexDiversityBonusUsd: selected.routing?.dexDiversityBonusUsd || 0,
-    gasCostUsd: result.gasCostUsd || 0,
-    executionCostUsd: result.executionCostUsd || 0,
-    netAfterGasUsd: result.netAfterGasUsd || 0,
-    netAfterAllCostsUsd: result.netAfterAllCostsUsd || 0,
-    tradeAmountUsd: selected.opp?.tradeAmountUsd || 0,
-    consideredCount: opportunities.length,
-    mode: state.session.mode,
-    walletAddress: state.session.wallet.address,
-    onchainPreflight: result.preflight || null,
-    runtimeSignals: state.runtimeSignals,
-    ...result
-  };
-  appendRecord(record);
-  optimizeFromHistory();
-  const alerts = getAlertStatus();
-  appendAlertSnapshot(alerts);
-
-  return { config: state.config, opportunities, selected: selected.opp, record, autopilot: state.autopilot, session: state.session, runtimeSignals: state.runtimeSignals, alerts };
 }
 
 loadRuntimeState();

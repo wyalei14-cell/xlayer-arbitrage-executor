@@ -740,6 +740,30 @@ test('evaluateRuntimeAlerts raises critical high-gas-pressure from runtime signa
   assert.ok(out.alerts.some((a) => a.code === 'high-gas-pressure' && a.level === 'critical'));
 });
 
+test('evaluateRuntimeAlerts raises critical execution-lock-stuck when lock age breaches ttl', () => {
+  const runtimeState = {
+    ...state,
+    config: {
+      ...state.config,
+      executionLockTtlMs: 5_000
+    },
+    runtimeSignals: {
+      ...state.runtimeSignals,
+      executionLockActive: true,
+      executionLockAgeMs: 12_000
+    },
+    session: { ...state.session, wallet: { ...state.session.wallet } }
+  };
+
+  const out = evaluateRuntimeAlerts({
+    rows: [],
+    metrics: { sampleSize: 0, executionRate: 0, totalRealizedPnlUsd: 0 },
+    runtimeState
+  });
+
+  assert.ok(out.alerts.some((a) => a.code === 'execution-lock-stuck' && a.level === 'critical'));
+});
+
 test('evaluateRuntimeAlerts raises warning/critical alerts when 24h loss limits are breached', () => {
   const nowIso = new Date().toISOString();
   const rows = [
